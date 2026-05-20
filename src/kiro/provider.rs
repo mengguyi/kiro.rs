@@ -177,7 +177,8 @@ impl KiroProvider {
                 Ok(resp) => resp,
                 Err(e) => {
                     tracing::warn!(
-                        "MCP 请求发送失败（尝试 {}/{}）: {}",
+                        "凭据 #{} MCP 请求发送失败（尝试 {}/{}）: {}",
+                        ctx.id,
                         attempt + 1,
                         max_retries,
                         e
@@ -240,7 +241,8 @@ impl KiroProvider {
             // 瞬态错误
             if matches!(status.as_u16(), 408 | 429) || status.is_server_error() {
                 tracing::warn!(
-                    "MCP 请求失败（上游瞬态错误，尝试 {}/{}）: {} {}",
+                    "凭据 #{} MCP 请求失败（上游瞬态错误，尝试 {}/{}）: {} {}",
+                    ctx.id,
                     attempt + 1,
                     max_retries,
                     status,
@@ -334,7 +336,8 @@ impl KiroProvider {
                 Ok(resp) => resp,
                 Err(e) => {
                     tracing::warn!(
-                        "API 请求发送失败（尝试 {}/{}）: {}",
+                        "凭据 #{} API 请求发送失败（尝试 {}/{}）: {}",
+                        ctx.id,
                         attempt + 1,
                         max_retries,
                         e
@@ -363,7 +366,8 @@ impl KiroProvider {
             // 402 Payment Required 且额度用尽：禁用凭据并故障转移
             if status.as_u16() == 402 && endpoint.is_monthly_request_limit(&body) {
                 tracing::warn!(
-                    "API 请求失败（额度已用尽，禁用凭据并切换，尝试 {}/{}）: {} {}",
+                    "凭据 #{} API 请求失败（额度已用尽，禁用凭据并切换，尝试 {}/{}）: {} {}",
+                    ctx.id,
                     attempt + 1,
                     max_retries,
                     status,
@@ -397,7 +401,8 @@ impl KiroProvider {
             // 401/403 - 更可能是凭据/权限问题：计入失败并允许故障转移
             if matches!(status.as_u16(), 401 | 403) {
                 tracing::warn!(
-                    "API 请求失败（可能为凭据错误，尝试 {}/{}）: {} {}",
+                    "凭据 #{} API 请求失败（可能为凭据错误，尝试 {}/{}）: {} {}",
+                    ctx.id,
                     attempt + 1,
                     max_retries,
                     status,
@@ -438,7 +443,8 @@ impl KiroProvider {
             // （避免 429 high traffic / 502 high load 等瞬态错误把所有凭据锁死）
             if matches!(status.as_u16(), 408 | 429) || status.is_server_error() {
                 tracing::warn!(
-                    "API 请求失败（上游瞬态错误，尝试 {}/{}）: {} {}",
+                    "凭据 #{} API 请求失败（上游瞬态错误，尝试 {}/{}）: {} {}",
+                    ctx.id,
                     attempt + 1,
                     max_retries,
                     status,
@@ -463,7 +469,8 @@ impl KiroProvider {
 
             // 兜底：当作可重试的瞬态错误处理（不切换凭据）
             tracing::warn!(
-                "API 请求失败（未知错误，尝试 {}/{}）: {} {}",
+                "凭据 #{} API 请求失败（未知错误，尝试 {}/{}）: {} {}",
+                ctx.id,
                 attempt + 1,
                 max_retries,
                 status,
