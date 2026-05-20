@@ -32,10 +32,10 @@ fn normalize_json_schema(schema: serde_json::Value) -> serde_json::Value {
     };
 
     // type（必须是字符串）
-    if !obj
+    if obj
         .get("type")
         .and_then(|v| v.as_str())
-        .is_some_and(|s| !s.is_empty())
+        .is_none_or(|s| s.is_empty())
     {
         obj.insert(
             "type".to_string(),
@@ -190,12 +190,11 @@ impl std::error::Error for ConversionError {}
 /// 提取 session UUID 作为 conversationId
 fn extract_session_id(user_id: &str) -> Option<String> {
     // 先尝试 JSON 解析
-    if let Ok(json) = serde_json::from_str::<serde_json::Value>(user_id) {
-        if let Some(session_id) = json.get("session_id").and_then(|v| v.as_str()) {
-            if is_valid_uuid(session_id) {
-                return Some(session_id.to_string());
-            }
-        }
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(user_id)
+        && let Some(session_id) = json.get("session_id").and_then(|v| v.as_str())
+        && is_valid_uuid(session_id)
+    {
+        return Some(session_id.to_string());
     }
 
     // 回退到字符串格式: 查找 "session_" 后面的内容
@@ -221,12 +220,12 @@ fn collect_history_tool_names(history: &[Message]) -> Vec<String> {
     let mut tool_names = Vec::new();
 
     for msg in history {
-        if let Message::Assistant(assistant_msg) = msg {
-            if let Some(ref tool_uses) = assistant_msg.assistant_response_message.tool_uses {
-                for tool_use in tool_uses {
-                    if !tool_names.contains(&tool_use.name) {
-                        tool_names.push(tool_use.name.clone());
-                    }
+        if let Message::Assistant(assistant_msg) = msg
+            && let Some(ref tool_uses) = assistant_msg.assistant_response_message.tool_uses
+        {
+            for tool_use in tool_uses {
+                if !tool_names.contains(&tool_use.name) {
+                    tool_names.push(tool_use.name.clone());
                 }
             }
         }
@@ -395,10 +394,10 @@ fn process_message_content(
                             }
                         }
                         "image" => {
-                            if let Some(source) = block.source {
-                                if let Some(format) = get_image_format(&source.media_type) {
-                                    images.push(KiroImage::from_base64(format, source.data));
-                                }
+                            if let Some(source) = block.source
+                                && let Some(format) = get_image_format(&source.media_type)
+                            {
+                                images.push(KiroImage::from_base64(format, source.data));
                             }
                         }
                         "tool_result" => {
@@ -561,20 +560,20 @@ fn remove_orphaned_tool_uses(
     }
 
     for msg in history.iter_mut() {
-        if let Message::Assistant(assistant_msg) = msg {
-            if let Some(ref mut tool_uses) = assistant_msg.assistant_response_message.tool_uses {
-                let original_len = tool_uses.len();
-                tool_uses.retain(|tu| !orphaned_ids.contains(&tu.tool_use_id));
+        if let Message::Assistant(assistant_msg) = msg
+            && let Some(ref mut tool_uses) = assistant_msg.assistant_response_message.tool_uses
+        {
+            let original_len = tool_uses.len();
+            tool_uses.retain(|tu| !orphaned_ids.contains(&tu.tool_use_id));
 
-                // 如果移除后为空，设置为 None
-                if tool_uses.is_empty() {
-                    assistant_msg.assistant_response_message.tool_uses = None;
-                } else if tool_uses.len() != original_len {
-                    tracing::debug!(
-                        "从 assistant 消息中移除了 {} 个孤立的 tool_use",
-                        original_len - tool_uses.len()
-                    );
-                }
+            // 如果移除后为空，设置为 None
+            if tool_uses.is_empty() {
+                assistant_msg.assistant_response_message.tool_uses = None;
+            } else if tool_uses.len() != original_len {
+                tracing::debug!(
+                    "从 assistant 消息中移除了 {} 个孤立的 tool_use",
+                    original_len - tool_uses.len()
+                );
             }
         }
     }

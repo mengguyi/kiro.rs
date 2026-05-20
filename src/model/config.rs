@@ -6,15 +6,11 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
+#[derive(Default)]
 pub enum TlsBackend {
+    #[default]
     Rustls,
     NativeTls,
-}
-
-impl Default for TlsBackend {
-    fn default() -> Self {
-        Self::Rustls
-    }
 }
 
 /// KNA 应用配置

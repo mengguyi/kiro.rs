@@ -898,16 +898,15 @@ impl MultiTokenManager {
             .iter()
             .filter(|e| !e.disabled)
             .min_by_key(|e| e.credentials.priority)
+            && best.id != *current_id
         {
-            if best.id != *current_id {
-                tracing::info!(
-                    "优先级变更后切换凭据: #{} -> #{}（优先级 {}）",
-                    *current_id,
-                    best.id,
-                    best.credentials.priority
-                );
-                *current_id = best.id;
-            }
+            tracing::info!(
+                "优先级变更后切换凭据: #{} -> #{}（优先级 {}）",
+                *current_id,
+                best.id,
+                best.credentials.priority
+            );
+            *current_id = best.id;
         }
     }
 
@@ -1666,10 +1665,8 @@ impl MultiTokenManager {
                 }
             };
 
-            if changed {
-                if let Err(e) = self.persist_credentials() {
-                    tracing::warn!("订阅等级更新后持久化失败（不影响本次请求）: {}", e);
-                }
+            if changed && let Err(e) = self.persist_credentials() {
+                tracing::warn!("订阅等级更新后持久化失败（不影响本次请求）: {}", e);
             }
         }
 
