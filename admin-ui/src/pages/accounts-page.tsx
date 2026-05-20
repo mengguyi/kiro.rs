@@ -7,7 +7,10 @@ import {
   Trash2,
   RotateCcw,
   CheckCircle2,
+  ChevronDown,
+  X,
 } from 'lucide-react'
+import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import { useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { Card, CardContent } from '@/components/ui/card'
@@ -51,7 +54,8 @@ export function AccountsPage() {
   const [batchRefreshing, setBatchRefreshing] = useState(false)
   const [batchRefreshProgress, setBatchRefreshProgress] = useState({ current: 0, total: 0 })
   const cancelVerifyRef = useRef(false)
-  const cancelQueryAllRef = useRef(false)
+  // 余额刷新统一 cancel ref（"本页" 和 "全部" 共用，由 fetchBalancesSequentially 内部检查）
+  const cancelBalanceRef = useRef(false)
   const [currentPage, setCurrentPage] = useState(1)
   const itemsPerPage = 12
 
@@ -305,7 +309,7 @@ export function AccountsPage() {
         })
       }
       onProgress(i + 1, ids.length)
-      if (cancelQueryAllRef.current) break
+      if (cancelBalanceRef.current) break
     }
     return { success, fail }
   }
@@ -321,14 +325,20 @@ export function AccountsPage() {
       toast.error('当前页没有可查询的启用凭据')
       return
     }
+    cancelBalanceRef.current = false
     setQueryingInfo(true)
     setQueryInfoProgress({ current: 0, total: ids.length })
     const { success, fail } = await fetchBalancesSequentially(ids, (cur, total) =>
       setQueryInfoProgress({ current: cur, total })
     )
     setQueryingInfo(false)
-    if (fail === 0) toast.success(`本页余额刷新完成：成功 ${success}/${ids.length}`)
-    else toast.warning(`本页余额刷新：成功 ${success} 个，失败 ${fail} 个`)
+    if (cancelBalanceRef.current) {
+      toast.info(`已取消，本次完成 ${success}/${ids.length}`)
+    } else if (fail === 0) {
+      toast.success(`本页余额刷新完成：成功 ${success}/${ids.length}`)
+    } else {
+      toast.warning(`本页余额刷新：成功 ${success} 个，失败 ${fail} 个`)
+    }
   }
 
   // 刷新全部（已启用凭据的）余额
@@ -343,14 +353,14 @@ export function AccountsPage() {
       !confirm(`将逐条查询 ${ids.length} 个凭据的余额，估计耗时 ${Math.ceil(ids.length * 0.8)} 秒。继续？`)
     )
       return
-    cancelQueryAllRef.current = false
+    cancelBalanceRef.current = false
     setQueryAllInfo(true)
     setQueryAllProgress({ current: 0, total: ids.length })
     const { success, fail } = await fetchBalancesSequentially(ids, (cur, total) =>
       setQueryAllProgress({ current: cur, total })
     )
     setQueryAllInfo(false)
-    if (cancelQueryAllRef.current) {
+    if (cancelBalanceRef.current) {
       toast.info(`已取消，本次完成 ${success}/${ids.length}`)
     } else if (fail === 0) {
       toast.success(`全部余额刷新完成：成功 ${success}/${ids.length}`)
@@ -359,9 +369,16 @@ export function AccountsPage() {
     }
   }
 
-  const handleCancelQueryAll = () => {
-    cancelQueryAllRef.current = true
+  const handleCancelBalance = () => {
+    cancelBalanceRef.current = true
   }
+
+  const refreshingBalance = queryingInfo || queryAllInfo
+  const refreshingLabel = queryAllInfo
+    ? `${queryAllProgress.current}/${queryAllProgress.total}`
+    : `${queryInfoProgress.current}/${queryInfoProgress.total}`
+  const currentPageEnabledCount = currentCredentials.filter((c) => !c.disabled).length
+  const allEnabledCount = (data?.credentials ?? []).filter((c) => !c.disabled).length
 
   const handleBatchVerify = async () => {
     if (selectedIds.size === 0) {
@@ -498,34 +515,60 @@ export function AccountsPage() {
             <RefreshCw className="h-4 w-4 mr-2" />
             刷新列表
           </Button>
-          {data?.credentials && data.credentials.length > 0 && (
-            <Button
-              onClick={handleQueryCurrentPageBalance}
-              size="sm"
-              variant="outline"
-              disabled={queryingInfo || queryAllInfo}
-              title="逐个查询当前页已启用凭据的余额"
-            >
-              <RefreshCw className={`h-4 w-4 mr-2 ${queryingInfo ? 'animate-spin' : ''}`} />
-              {queryingInfo
-                ? `查询中... ${queryInfoProgress.current}/${queryInfoProgress.total}`
-                : '刷新本页余额'}
-            </Button>
-          )}
-          {data?.credentials && data.credentials.length > 0 && (
-            <Button
-              onClick={queryAllInfo ? handleCancelQueryAll : handleQueryAllBalance}
-              size="sm"
-              variant="outline"
-              disabled={queryingInfo}
-              title="逐个查询所有已启用凭据的余额（耗时较长，可取消）"
-            >
-              <RefreshCw className={`h-4 w-4 mr-2 ${queryAllInfo ? 'animate-spin' : ''}`} />
-              {queryAllInfo
-                ? `取消（${queryAllProgress.current}/${queryAllProgress.total}）`
-                : '刷新全部余额'}
-            </Button>
-          )}
+          {data?.credentials && data.credentials.length > 0 &&
+            (refreshingBalance ? (
+              <Button
+                onClick={handleCancelBalance}
+                size="sm"
+                variant="outline"
+                title="取消正在进行的余额查询"
+              >
+                <X className="h-4 w-4 mr-2" />
+                取消查询 ({refreshingLabel})
+              </Button>
+            ) : (
+              <DropdownMenu.Root>
+                <DropdownMenu.Trigger asChild>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    title="逐个查询凭据余额（调上游 getUsageLimits）"
+                  >
+                    <RefreshCw className="h-4 w-4 mr-2" />
+                    刷新余额
+                    <ChevronDown className="h-3.5 w-3.5 ml-1 opacity-70" />
+                  </Button>
+                </DropdownMenu.Trigger>
+                <DropdownMenu.Portal>
+                  <DropdownMenu.Content
+                    align="end"
+                    sideOffset={4}
+                    className="z-50 min-w-[200px] rounded-md border bg-popover p-1 text-popover-foreground shadow-md"
+                  >
+                    <DropdownMenu.Item
+                      onSelect={handleQueryCurrentPageBalance}
+                      disabled={currentPageEnabledCount === 0}
+                      className="flex justify-between items-center px-3 py-2 text-sm rounded-sm outline-none cursor-pointer hover:bg-accent hover:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
+                    >
+                      <span>本页</span>
+                      <span className="text-xs text-muted-foreground">
+                        {currentPageEnabledCount} 个
+                      </span>
+                    </DropdownMenu.Item>
+                    <DropdownMenu.Item
+                      onSelect={handleQueryAllBalance}
+                      disabled={allEnabledCount === 0}
+                      className="flex justify-between items-center px-3 py-2 text-sm rounded-sm outline-none cursor-pointer hover:bg-accent hover:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
+                    >
+                      <span>全部</span>
+                      <span className="text-xs text-muted-foreground">
+                        {allEnabledCount} 个
+                      </span>
+                    </DropdownMenu.Item>
+                  </DropdownMenu.Content>
+                </DropdownMenu.Portal>
+              </DropdownMenu.Root>
+            ))}
           {data?.credentials && data.credentials.length > 0 && (
             <Button
               onClick={handleClearAll}
