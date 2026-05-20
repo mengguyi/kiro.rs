@@ -1,13 +1,23 @@
 //! Admin API HTTP 处理器
 
+use std::convert::Infallible;
+
 use axum::{
     Json,
-    extract::{Path, State},
-    response::IntoResponse,
+    extract::{Path, Query, State},
+    response::{
+        IntoResponse,
+        sse::{Event, KeepAlive, Sse},
+    },
 };
+use futures::{Stream, StreamExt};
+use serde::Deserialize;
+use tokio_stream::wrappers::BroadcastStream;
 
 use super::{
+    console_log,
     middleware::AdminState,
+    request_log,
     types::{
         AddCredentialRequest, SetDisabledRequest, SetLoadBalancingModeRequest, SetPriorityRequest,
         SuccessResponse,
@@ -139,4 +149,54 @@ pub async fn set_load_balancing_mode(
         Ok(response) => Json(response).into_response(),
         Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
     }
+}
+
+/// `GET /api/admin/requests` query 参数
+#[derive(Debug, Deserialize)]
+pub struct RequestLogQuery {
+    /// 最多返回的条数（默认全部，环形缓冲上限由后端常量决定）
+    pub limit: Option<usize>,
+    /// 仅返回 `time_ms` 大于此值的条目（用于增量轮询）
+    pub since: Option<i64>,
+}
+
+/// GET /api/admin/requests
+///
+/// 倒序返回内存中的最近业务请求日志。
+pub async fn get_request_logs(
+    State(_state): State<AdminState>,
+    Query(query): Query<RequestLogQuery>,
+) -> impl IntoResponse {
+    let entries = request_log::list(query.limit, query.since);
+    Json(entries)
+}
+
+/// GET /api/admin/console-recent
+///
+/// 拿控制台日志历史快照（倒序，最新在前）。客户端 SSE 连上前先一次性补全屏幕。
+pub async fn get_console_recent(
+    State(_state): State<AdminState>,
+    Query(query): Query<RequestLogQuery>,
+) -> impl IntoResponse {
+    Json(console_log::list_recent(query.limit))
+}
+
+/// GET /api/admin/console-stream
+///
+/// 控制台日志 SSE 实时推流。每条 tracing event 作为一个 SSE `data: <json>` 帧。
+/// 配 keep-alive 防止经过反代时被中间层切断。
+pub async fn get_console_stream(
+    State(_state): State<AdminState>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let rx = console_log::subscribe().expect("console_log buffer not initialized");
+    let stream = BroadcastStream::new(rx).filter_map(|res| async move {
+        match res {
+            Ok(entry) => serde_json::to_string(&entry)
+                .ok()
+                .map(|data| Ok::<_, Infallible>(Event::default().data(data))),
+            // 慢消费者落后：忽略 Lagged 错误，不断流
+            Err(_) => None,
+        }
+    });
+    Sse::new(stream).keep_alive(KeepAlive::default())
 }

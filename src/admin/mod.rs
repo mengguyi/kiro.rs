@@ -16,11 +16,14 @@
 //! let admin_router = create_admin_router(admin_state);
 //! ```
 
+pub mod console_log;
 mod error;
 mod handlers;
 mod middleware;
+pub mod request_log;
 mod router;
 mod service;
+pub mod tracing_layer;
 pub mod types;
 
 pub use middleware::AdminState;

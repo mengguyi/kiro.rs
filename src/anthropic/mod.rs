@@ -24,6 +24,7 @@
 
 mod converter;
 mod handlers;
+mod log_middleware;
 mod middleware;
 mod router;
 mod stream;

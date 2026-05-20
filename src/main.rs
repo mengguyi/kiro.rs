@@ -23,13 +23,21 @@ async fn main() {
     // 解析命令行参数
     let args = Args::parse();
 
-    // 初始化日志
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+    // 初始化日志：在 subscriber 注册前先开 console_log 全局缓冲，
+    // 让 ConsoleCapture Layer 写入时不丢首批事件。
+    admin::console_log::init();
+
+    {
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::util::SubscriberInitExt;
+        let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(tracing_subscriber::fmt::layer())
+            .with(admin::tracing_layer::ConsoleCapture::new())
+            .init();
+    }
 
     // 加载配置
     let config_path = args
@@ -71,7 +79,11 @@ async fn main() {
         }
     }
 
+    // 初始化请求日志环形缓冲（全局单例，业务请求会自动写入）
+    admin::request_log::init();
+
     tracing::info!("已加载 {} 个凭据配置", credentials_list.len());
+    // 同步启动横幅顺手补完 cc/v1 那两条之前漏列的 endpoint（startup banner）
 
     // 获取第一个凭据用于日志显示
     let first_credentials = credentials_list.first().cloned().unwrap_or_default();
@@ -203,13 +215,19 @@ async fn main() {
     tracing::info!("  GET  /v1/models");
     tracing::info!("  POST /v1/messages");
     tracing::info!("  POST /v1/messages/count_tokens");
+    tracing::info!("  POST /cc/v1/messages");
+    tracing::info!("  POST /cc/v1/messages/count_tokens");
     if admin_key_valid {
         tracing::info!("Admin API:");
         tracing::info!("  GET  /api/admin/credentials");
         tracing::info!("  POST /api/admin/credentials/:index/disabled");
         tracing::info!("  POST /api/admin/credentials/:index/priority");
         tracing::info!("  POST /api/admin/credentials/:index/reset");
+        tracing::info!("  POST /api/admin/credentials/:index/refresh");
         tracing::info!("  GET  /api/admin/credentials/:index/balance");
+        tracing::info!("  GET  /api/admin/requests");
+        tracing::info!("  GET  /api/admin/console-recent");
+        tracing::info!("  GET  /api/admin/console-stream (SSE)");
         tracing::info!("Admin UI:");
         tracing::info!("  GET  /admin");
     }
