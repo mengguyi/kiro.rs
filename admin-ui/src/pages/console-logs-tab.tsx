@@ -1,8 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Pause, Play, Trash2 } from 'lucide-react'
+import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
-import { listConsoleRecent, streamConsoleLogs } from '@/api/credentials'
+import {
+  clearConsoleLogs,
+  listConsoleRecent,
+  streamConsoleLogs,
+} from '@/api/credentials'
 import { extractErrorMessage } from '@/lib/utils'
 import type { ConsoleLogEntry } from '@/types/api'
 
@@ -163,6 +168,24 @@ export function ConsoleLogsTab() {
           >
             <Trash2 className="h-4 w-4 mr-2" />
             清屏
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={async () => {
+              if (!confirm('清空后端控制台日志缓冲？已建立的 SSE 流继续推新事件，不受影响。')) return
+              try {
+                await clearConsoleLogs()
+                setEntries([])
+                toast.success('控制台日志已清空')
+              } catch (e) {
+                toast.error(`清空失败：${extractErrorMessage(e)}`)
+              }
+            }}
+            title="同时清空后端 ring buffer 和前端缓冲"
+          >
+            <Trash2 className="h-4 w-4 mr-2" />
+            清空缓冲
           </Button>
         </div>
       </div>

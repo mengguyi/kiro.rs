@@ -7,10 +7,10 @@ use axum::{
 
 use super::{
     handlers::{
-        add_credential, delete_credential, force_refresh_token, get_all_credentials,
-        get_console_recent, get_console_stream, get_credential_balance, get_load_balancing_mode,
-        get_request_logs, reset_failure_count, set_credential_disabled, set_credential_priority,
-        set_load_balancing_mode,
+        add_credential, clear_console_logs, clear_request_logs, delete_credential,
+        force_refresh_token, get_all_credentials, get_console_recent, get_console_stream,
+        get_credential_balance, get_load_balancing_mode, get_request_logs, reset_failure_count,
+        set_credential_disabled, set_credential_priority, set_load_balancing_mode,
     },
     middleware::{AdminState, admin_auth_middleware},
 };
@@ -49,8 +49,11 @@ pub fn create_admin_router(state: AdminState) -> Router {
             "/config/load-balancing",
             get(get_load_balancing_mode).put(set_load_balancing_mode),
         )
-        .route("/requests", get(get_request_logs))
-        .route("/console-recent", get(get_console_recent))
+        .route("/requests", get(get_request_logs).delete(clear_request_logs))
+        .route(
+            "/console-recent",
+            get(get_console_recent).delete(clear_console_logs),
+        )
         .route("/console-stream", get(get_console_stream))
         .layer(middleware::from_fn_with_state(
             state.clone(),

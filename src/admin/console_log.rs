@@ -71,3 +71,10 @@ pub fn list_recent(limit: Option<usize>) -> Vec<ConsoleLogEntry> {
 pub fn subscribe() -> Option<broadcast::Receiver<ConsoleLogEntry>> {
     SENDER.get().map(|s| s.subscribe())
 }
+
+/// 清空历史缓冲（已订阅的 SSE 流不受影响——broadcast 通道不清，只清 ring buffer）。
+pub fn clear() {
+    if let Some(recent) = RECENT.get() {
+        recent.lock().clear();
+    }
+}

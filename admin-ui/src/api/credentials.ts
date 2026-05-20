@@ -124,6 +124,18 @@ export async function listConsoleRecent(limit = 300): Promise<ConsoleLogEntry[]>
   return data
 }
 
+// 清空请求日志环形缓冲（后端层面，不影响新进来的请求）
+export async function clearRequestLogs(): Promise<SuccessResponse> {
+  const { data } = await api.delete<SuccessResponse>('/requests')
+  return data
+}
+
+// 清空控制台日志环形缓冲（不影响已建立的 SSE 流）
+export async function clearConsoleLogs(): Promise<SuccessResponse> {
+  const { data } = await api.delete<SuccessResponse>('/console-recent')
+  return data
+}
+
 /**
  * SSE 订阅控制台日志。fetch+ReadableStream 实现而非 EventSource，
  * 因为 EventSource 不支持自定义 header（要带 x-api-key 鉴权）。

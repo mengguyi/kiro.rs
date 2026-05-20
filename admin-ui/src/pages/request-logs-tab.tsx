@@ -1,10 +1,14 @@
 import { useMemo, useState } from 'react'
-import { Pause, Play, RefreshCw } from 'lucide-react'
+import { Pause, Play, RefreshCw, Trash2 } from 'lucide-react'
+import { useQueryClient } from '@tanstack/react-query'
+import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { useRequestLogs } from '@/hooks/use-logs'
+import { clearRequestLogs } from '@/api/credentials'
+import { extractErrorMessage } from '@/lib/utils'
 
 const PATH_FILTERS: { label: string; value: string }[] = [
   { label: '全部', value: '' },
@@ -54,10 +58,22 @@ export function RequestLogsTab() {
   const [reqIdSearch, setReqIdSearch] = useState('')
   const [autoRefresh, setAutoRefresh] = useState(true)
 
+  const queryClient = useQueryClient()
   const { data, isLoading, error, refetch, dataUpdatedAt } = useRequestLogs(
     500,
     autoRefresh ? 5000 : 0
   )
+
+  const handleClear = async () => {
+    if (!confirm('确定清空后端请求日志环形缓冲吗？此操作不可恢复。')) return
+    try {
+      await clearRequestLogs()
+      queryClient.invalidateQueries({ queryKey: ['request-logs'] })
+      toast.success('请求日志已清空')
+    } catch (e) {
+      toast.error(`清空失败：${extractErrorMessage(e)}`)
+    }
+  }
 
   const filtered = useMemo(() => {
     const entries = data ?? []
@@ -98,6 +114,16 @@ export function RequestLogsTab() {
           <Button size="sm" variant="outline" onClick={() => refetch()} title="立即刷新">
             <RefreshCw className="h-4 w-4 mr-2" />
             刷新
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={handleClear}
+            disabled={!data || data.length === 0}
+            title="清空后端请求日志环形缓冲"
+          >
+            <Trash2 className="h-4 w-4 mr-2" />
+            清空
           </Button>
         </div>
       </div>

@@ -225,9 +225,11 @@ async fn main() {
         tracing::info!("  POST /api/admin/credentials/:index/reset");
         tracing::info!("  POST /api/admin/credentials/:index/refresh");
         tracing::info!("  GET  /api/admin/credentials/:index/balance");
-        tracing::info!("  GET  /api/admin/requests");
-        tracing::info!("  GET  /api/admin/console-recent");
-        tracing::info!("  GET  /api/admin/console-stream (SSE)");
+        tracing::info!("  GET    /api/admin/requests");
+        tracing::info!("  DELETE /api/admin/requests");
+        tracing::info!("  GET    /api/admin/console-recent");
+        tracing::info!("  DELETE /api/admin/console-recent");
+        tracing::info!("  GET    /api/admin/console-stream (SSE)");
         tracing::info!("Admin UI:");
         tracing::info!("  GET  /admin");
     }

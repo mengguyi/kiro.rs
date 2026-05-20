@@ -96,3 +96,10 @@ pub fn list(limit: Option<usize>, since_ms: Option<i64>) -> Vec<RequestLogEntry>
         .map(|b| b.list(limit, since_ms))
         .unwrap_or_default()
 }
+
+/// 全局清空（未 init 时静默忽略）
+pub fn clear() {
+    if let Some(buf) = GLOBAL.get() {
+        buf.clear();
+    }
+}

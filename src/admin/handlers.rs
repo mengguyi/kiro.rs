@@ -200,3 +200,23 @@ pub async fn get_console_stream(
     });
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
+
+/// DELETE /api/admin/requests
+///
+/// 清空请求日志环形缓冲（不影响新进来的请求，只清历史）。
+pub async fn clear_request_logs(
+    State(_state): State<AdminState>,
+) -> impl IntoResponse {
+    request_log::clear();
+    Json(SuccessResponse::new("请求日志已清空".to_string()))
+}
+
+/// DELETE /api/admin/console-recent
+///
+/// 清空控制台日志环形缓冲。**不影响**已建立的 SSE 流（broadcast 通道继续推新事件）。
+pub async fn clear_console_logs(
+    State(_state): State<AdminState>,
+) -> impl IntoResponse {
+    console_log::clear();
+    Json(SuccessResponse::new("控制台日志已清空".to_string()))
+}
