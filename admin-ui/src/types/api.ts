@@ -87,3 +87,21 @@ export interface AddCredentialResponse {
   credentialId: number
   email?: string
 }
+
+// 请求日志条目（GET /api/admin/requests）
+export interface RequestLogEntry {
+  timeMs: number
+  reqId: string
+  method: string
+  path: string
+  status: number
+  latencyMs: number
+}
+
+// 控制台日志条目（GET /api/admin/console-recent + SSE）
+export interface ConsoleLogEntry {
+  timeMs: number
+  level: string
+  target: string
+  message: string
+}
