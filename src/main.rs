@@ -189,8 +189,11 @@ async fn main() {
             tracing::warn!("admin_api_key 配置为空，Admin API 未启用");
             anthropic_app
         } else {
-            let admin_service =
-                admin::AdminService::new(token_manager.clone(), endpoint_names.clone());
+            let admin_service = admin::AdminService::new(
+                token_manager.clone(),
+                endpoint_names.clone(),
+                api_key.clone(),
+            );
             let admin_state = admin::AdminState::new(admin_key, admin_service);
             let admin_app = admin::create_admin_router(admin_state);
 

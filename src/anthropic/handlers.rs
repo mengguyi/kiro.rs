@@ -8,7 +8,7 @@ use crate::kiro::model::requests::kiro::KiroRequest;
 use crate::kiro::parser::decoder::EventStreamDecoder;
 use crate::token;
 use axum::{
-    Json as JsonExtractor,
+    Extension, Json as JsonExtractor,
     body::Body,
     extract::State,
     http::{StatusCode, header},
@@ -22,7 +22,7 @@ use tokio::time::interval;
 use uuid::Uuid;
 
 use super::converter::{ConversionError, convert_request};
-use super::middleware::AppState;
+use super::middleware::{AppState, CredentialId};
 use super::stream::{BufferedStreamContext, SseEvent, StreamContext};
 use super::types::{CountTokensRequest, CountTokensResponse, ErrorResponse, MessagesRequest, Model, ModelsResponse, OutputConfig, Thinking};
 use super::websearch;
@@ -249,13 +249,16 @@ pub async fn get_models() -> impl IntoResponse {
 /// 创建消息（对话）
 pub async fn post_messages(
     State(state): State<AppState>,
+    cred: Option<Extension<CredentialId>>,
     JsonExtractor(mut payload): JsonExtractor<MessagesRequest>,
 ) -> Response {
+    let credential_id = cred.map(|Extension(CredentialId(id))| id);
     tracing::info!(
         model = %payload.model,
         max_tokens = %payload.max_tokens,
         stream = %payload.stream,
         message_count = %payload.messages.len(),
+        credential_id = ?credential_id,
         "Received POST /v1/messages request"
     );
     // 检查 KiroProvider 是否可用
@@ -362,12 +365,22 @@ pub async fn post_messages(
             input_tokens,
             thinking_enabled,
             tool_name_map,
+            credential_id,
         )
         .await
     } else {
         // 非流式响应：仅在配置开启时提取 thinking 块
         let extract_thinking = state.extract_thinking && thinking_enabled;
-        handle_non_stream_request(provider, &request_body, &payload.model, input_tokens, extract_thinking, tool_name_map).await
+        handle_non_stream_request(
+            provider,
+            &request_body,
+            &payload.model,
+            input_tokens,
+            extract_thinking,
+            tool_name_map,
+            credential_id,
+        )
+        .await
     }
 }
 
@@ -379,9 +392,10 @@ async fn handle_stream_request(
     input_tokens: i32,
     thinking_enabled: bool,
     tool_name_map: std::collections::HashMap<String, String>,
+    credential_id: Option<u64>,
 ) -> Response {
-    // 调用 Kiro API（支持多凭据故障转移）
-    let response = match provider.call_api_stream(request_body).await {
+    // 调用 Kiro API（支持多凭据故障转移；指定 cred_id 时锁定该号）
+    let response = match provider.call_api_stream(request_body, credential_id).await {
         Ok(resp) => resp,
         Err(e) => return map_provider_error(e),
     };
@@ -515,9 +529,10 @@ async fn handle_non_stream_request(
     input_tokens: i32,
     thinking_enabled: bool,
     tool_name_map: std::collections::HashMap<String, String>,
+    credential_id: Option<u64>,
 ) -> Response {
-    // 调用 Kiro API（支持多凭据故障转移）
-    let response = match provider.call_api(request_body).await {
+    // 调用 Kiro API（支持多凭据故障转移；指定 cred_id 时锁定该号）
+    let response = match provider.call_api(request_body, credential_id).await {
         Ok(resp) => resp,
         Err(e) => return map_provider_error(e),
     };
@@ -761,13 +776,16 @@ pub async fn count_tokens(
 /// - message_start 中的 input_tokens 是从 contextUsageEvent 计算的准确值
 pub async fn post_messages_cc(
     State(state): State<AppState>,
+    cred: Option<Extension<CredentialId>>,
     JsonExtractor(mut payload): JsonExtractor<MessagesRequest>,
 ) -> Response {
+    let credential_id = cred.map(|Extension(CredentialId(id))| id);
     tracing::info!(
         model = %payload.model,
         max_tokens = %payload.max_tokens,
         stream = %payload.stream,
         message_count = %payload.messages.len(),
+        credential_id = ?credential_id,
         "Received POST /cc/v1/messages request"
     );
 
@@ -875,12 +893,22 @@ pub async fn post_messages_cc(
             input_tokens,
             thinking_enabled,
             tool_name_map,
+            credential_id,
         )
         .await
     } else {
         // 非流式响应：仅在配置开启时提取 thinking 块
         let extract_thinking = state.extract_thinking && thinking_enabled;
-        handle_non_stream_request(provider, &request_body, &payload.model, input_tokens, extract_thinking, tool_name_map).await
+        handle_non_stream_request(
+            provider,
+            &request_body,
+            &payload.model,
+            input_tokens,
+            extract_thinking,
+            tool_name_map,
+            credential_id,
+        )
+        .await
     }
 }
 
@@ -895,9 +923,10 @@ async fn handle_stream_request_buffered(
     estimated_input_tokens: i32,
     thinking_enabled: bool,
     tool_name_map: std::collections::HashMap<String, String>,
+    credential_id: Option<u64>,
 ) -> Response {
-    // 调用 Kiro API（支持多凭据故障转移）
-    let response = match provider.call_api_stream(request_body).await {
+    // 调用 Kiro API（支持多凭据故障转移；指定 cred_id 时锁定该号）
+    let response = match provider.call_api_stream(request_body, credential_id).await {
         Ok(resp) => resp,
         Err(e) => return map_provider_error(e),
     };

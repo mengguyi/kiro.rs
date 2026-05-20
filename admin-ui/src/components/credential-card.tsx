@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { toast } from 'sonner'
-import { RefreshCw, ChevronUp, ChevronDown, Wallet, Trash2, Loader2 } from 'lucide-react'
+import { RefreshCw, ChevronUp, ChevronDown, Wallet, Trash2, Loader2, Copy } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -31,6 +31,14 @@ interface CredentialCardProps {
   onToggleSelect: () => void
   balance: BalanceResponse | null
   loadingBalance: boolean
+}
+
+/// 派生 key 脱敏：保前 8 + 后 (-id 后缀)，中间用 ··· 替代。
+/// 例：`sk-ant-1234567890-5` → `sk-ant-12···-5`
+function maskDerivedKey(derived: string, id: number): string {
+  const suffix = `-${id}`
+  const head = derived.slice(0, 8)
+  return `${head}···${suffix}`
 }
 
 function formatLastUsed(lastUsedAt: string | null): string {
@@ -262,6 +270,31 @@ export function CredentialCard({
               <div className="col-span-2">
                 <span className="text-muted-foreground">API Key：</span>
                 <span className="font-mono font-medium">{credential.maskedApiKey}</span>
+              </div>
+            )}
+            {credential.derivedApiKey && (
+              <div className="col-span-2 flex items-center gap-2 flex-wrap">
+                <span className="text-muted-foreground">渠道 Key (new-api)：</span>
+                <span className="font-mono text-xs">
+                  {maskDerivedKey(credential.derivedApiKey, credential.id)}
+                </span>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-6 px-2 text-xs"
+                  onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(credential.derivedApiKey!)
+                      toast.success(`已复制 #${credential.id} 的渠道 Key`)
+                    } catch {
+                      toast.error('复制失败，浏览器拒绝访问剪贴板')
+                    }
+                  }}
+                  title="复制完整 Key 到剪贴板（粘贴到 new-api 渠道配置）"
+                >
+                  <Copy className="h-3 w-3 mr-1" />
+                  复制
+                </Button>
               </div>
             )}
             <div className="col-span-2">

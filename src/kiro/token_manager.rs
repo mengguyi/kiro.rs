@@ -856,6 +856,34 @@ impl MultiTokenManager {
         }
     }
 
+    /// 直接按 ID 获取调用上下文（per_credential 模式 / new-api 调度用）
+    ///
+    /// 不经过负载均衡，凭据不存在或被禁用都直接返回错误，**不会**降级到其他号。
+    /// 这正是 "kiro.rs 专心做反代，调度交给外部" 的语义：失败让上层（new-api）
+    /// 自己决定要不要切渠道。
+    ///
+    /// 借鉴自 hank9999/kiro.rs PR #136。
+    pub async fn acquire_context_by_id(&self, id: u64) -> anyhow::Result<CallContext> {
+        let credentials = {
+            let entries = self.entries.lock();
+            let entry = entries
+                .iter()
+                .find(|e| e.id == id)
+                .ok_or_else(|| anyhow::anyhow!("凭据 #{} 不存在", id))?;
+            if entry.disabled {
+                anyhow::bail!("凭据 #{} 已禁用", id);
+            }
+            entry.credentials.clone()
+        };
+
+        let ctx = self.try_ensure_token(id, &credentials).await?;
+        tracing::info!(
+            "已选中凭据 #{} 处理请求（外部指定，per_credential 模式）",
+            ctx.id
+        );
+        Ok(ctx)
+    }
+
     /// 选择优先级最高的未禁用凭据作为当前凭据（内部方法）
     ///
     /// 纯粹按优先级选择，不排除当前凭据，用于优先级变更后立即生效

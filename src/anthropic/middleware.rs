@@ -15,6 +15,13 @@ use crate::kiro::provider::KiroProvider;
 
 use super::types::ErrorResponse;
 
+/// 凭证 ID 标记（auth_middleware 解析后塞进 request extensions，handler 取出）
+#[derive(Clone, Copy, Debug)]
+pub struct CredentialId(pub u64);
+
+/// 负载均衡模式常量（与 token_manager 共识）
+const MODE_PER_CREDENTIAL: &str = "per_credential";
+
 /// 应用共享状态
 #[derive(Clone)]
 pub struct AppState {
@@ -45,18 +52,49 @@ impl AppState {
 }
 
 /// API Key 认证中间件
+///
+/// 支持三种 key 形态：
+/// - `{base_key}`：走系统配置的负载策略（priority / balanced）。
+///   在 `per_credential` 模式下**拒绝**（401），强制所有请求由外部调度（new-api）指定 cred ID。
+/// - `{base_key}-{cred_id}`：锁定凭证，写入 [`CredentialId`] 到 request extensions。
+/// - 其他：401。
 pub async fn auth_middleware(
     State(state): State<AppState>,
-    request: Request<Body>,
+    mut request: Request<Body>,
     next: Next,
 ) -> Response {
-    match auth::extract_api_key(&request) {
-        Some(key) if auth::constant_time_eq(&key, &state.api_key) => next.run(request).await,
-        _ => {
-            let error = ErrorResponse::authentication_error();
-            (StatusCode::UNAUTHORIZED, Json(error)).into_response()
+    let Some(key) = auth::extract_api_key(&request) else {
+        return unauthorized();
+    };
+
+    // 1. 裸 base_key：根据模式决定放行还是拒绝
+    if auth::constant_time_eq(&key, &state.api_key) {
+        let mode = state
+            .kiro_provider
+            .as_ref()
+            .map(|p| p.load_balancing_mode())
+            .unwrap_or_default();
+        if mode == MODE_PER_CREDENTIAL {
+            tracing::warn!("per_credential 模式拒绝裸 base_key，请使用 {{base}}-{{id}} 后缀");
+            return unauthorized();
         }
+        return next.run(request).await;
     }
+
+    // 2. {base_key}-{cred_id} 后缀
+    if let Some(cred_id) = auth::parse_credential_id(&key, &state.api_key) {
+        tracing::debug!("API key 指定凭证 #{}", cred_id);
+        request.extensions_mut().insert(CredentialId(cred_id));
+        return next.run(request).await;
+    }
+
+    // 3. 都不匹配
+    unauthorized()
+}
+
+fn unauthorized() -> Response {
+    let error = ErrorResponse::authentication_error();
+    (StatusCode::UNAUTHORIZED, Json(error)).into_response()
 }
 
 /// CORS 中间件层

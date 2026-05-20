@@ -6,6 +6,9 @@ export interface CredentialsStatusResponse {
   credentials: CredentialStatusItem[]
 }
 
+// 负载均衡模式
+export type LoadBalancingMode = 'priority' | 'balanced' | 'per_credential'
+
 // 单个凭据状态
 export interface CredentialStatusItem {
   id: number
@@ -27,6 +30,8 @@ export interface CredentialStatusItem {
   refreshFailureCount: number
   disabledReason?: string
   endpoint: string
+  /** 派生 API Key（仅 per_credential 模式下后端填充：`{base}-{id}`） */
+  derivedApiKey?: string
 }
 
 // 余额响应

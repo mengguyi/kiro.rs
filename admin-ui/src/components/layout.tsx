@@ -9,12 +9,28 @@ import {
   LayoutDashboard,
   Users,
   ScrollText,
+  ChevronDown,
+  Check,
 } from 'lucide-react'
+import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import { useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { useLoadBalancingMode, useSetLoadBalancingMode } from '@/hooks/use-credentials'
 import { extractErrorMessage } from '@/lib/utils'
+import type { LoadBalancingMode } from '@/types/api'
+
+const MODE_LABELS: Record<LoadBalancingMode, string> = {
+  priority: '优先级模式',
+  balanced: '均衡负载',
+  per_credential: '渠道独立 (new-api)',
+}
+
+const MODE_DESCRIPTIONS: Record<LoadBalancingMode, string> = {
+  priority: '按 priority 字段挑号，固定使用当前号直到失败',
+  balanced: '按调用成功数做内部负载均衡，每次请求重新选号',
+  per_credential: 'API key 必须带 -{id} 后缀；裸 base_key 直接 401。由外部 (new-api) 做渠道调度',
+}
 
 interface LayoutProps {
   onLogout: () => void
@@ -42,14 +58,13 @@ export function Layout({ onLogout }: LayoutProps) {
     toast.success('已刷新所有数据')
   }
 
-  const handleToggleLoadBalancing = () => {
-    const currentMode = loadBalancingData?.mode || 'priority'
-    const newMode = currentMode === 'priority' ? 'balanced' : 'priority'
+  const currentMode: LoadBalancingMode = loadBalancingData?.mode || 'priority'
 
+  const handleSelectMode = (newMode: LoadBalancingMode) => {
+    if (newMode === currentMode) return
     setLoadBalancingMode(newMode, {
       onSuccess: () => {
-        const modeName = newMode === 'priority' ? '优先级模式' : '均衡负载模式'
-        toast.success(`已切换到${modeName}`)
+        toast.success(`已切换到${MODE_LABELS[newMode]}`)
       },
       onError: (error) => {
         toast.error(`切换失败: ${extractErrorMessage(error)}`)
@@ -89,19 +104,46 @@ export function Layout({ onLogout }: LayoutProps) {
             </nav>
           </div>
           <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleToggleLoadBalancing}
-              disabled={isLoadingMode || isSettingMode}
-              title="切换负载均衡模式"
-            >
-              {isLoadingMode
-                ? '加载中...'
-                : loadBalancingData?.mode === 'priority'
-                ? '优先级模式'
-                : '均衡负载'}
-            </Button>
+            <DropdownMenu.Root>
+              <DropdownMenu.Trigger asChild>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={isLoadingMode || isSettingMode}
+                  title="切换负载均衡模式"
+                >
+                  {isLoadingMode ? '加载中...' : MODE_LABELS[currentMode]}
+                  <ChevronDown className="h-4 w-4 ml-1.5 opacity-60" />
+                </Button>
+              </DropdownMenu.Trigger>
+              <DropdownMenu.Portal>
+                <DropdownMenu.Content
+                  align="end"
+                  sideOffset={4}
+                  className="z-50 min-w-[280px] rounded-md border bg-popover p-1 text-popover-foreground shadow-md"
+                >
+                  {(['priority', 'balanced', 'per_credential'] as LoadBalancingMode[]).map(
+                    (mode) => (
+                      <DropdownMenu.Item
+                        key={mode}
+                        onSelect={() => handleSelectMode(mode)}
+                        className="flex items-start gap-2 px-3 py-2 text-sm rounded-sm outline-none cursor-pointer hover:bg-accent hover:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
+                      >
+                        <div className="w-4 mt-0.5">
+                          {mode === currentMode && <Check className="h-4 w-4 text-primary" />}
+                        </div>
+                        <div className="flex-1">
+                          <div className="font-medium">{MODE_LABELS[mode]}</div>
+                          <div className="text-xs text-muted-foreground mt-0.5">
+                            {MODE_DESCRIPTIONS[mode]}
+                          </div>
+                        </div>
+                      </DropdownMenu.Item>
+                    )
+                  )}
+                </DropdownMenu.Content>
+              </DropdownMenu.Portal>
+            </DropdownMenu.Root>
             <Button
               variant="ghost"
               size="icon"

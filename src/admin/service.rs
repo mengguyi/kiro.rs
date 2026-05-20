@@ -38,12 +38,15 @@ pub struct AdminService {
     cache_path: Option<PathBuf>,
     /// 已注册的端点名称集合（用于 add_credential 校验）
     known_endpoints: HashSet<String>,
+    /// Anthropic 端 base API key（用于 per_credential 模式下派生 `{base}-{id}`）
+    base_api_key: String,
 }
 
 impl AdminService {
     pub fn new(
         token_manager: Arc<MultiTokenManager>,
         known_endpoints: impl IntoIterator<Item = String>,
+        base_api_key: impl Into<String>,
     ) -> Self {
         let cache_path = token_manager
             .cache_dir()
@@ -56,6 +59,7 @@ impl AdminService {
             balance_cache: Mutex::new(balance_cache),
             cache_path,
             known_endpoints: known_endpoints.into_iter().collect(),
+            base_api_key: base_api_key.into(),
         }
     }
 
@@ -63,30 +67,40 @@ impl AdminService {
     pub fn get_all_credentials(&self) -> CredentialsStatusResponse {
         let snapshot = self.token_manager.snapshot();
         let default_endpoint = self.token_manager.config().default_endpoint.clone();
+        let mode = self.token_manager.get_load_balancing_mode();
+        let in_per_credential = mode == "per_credential";
 
         let mut credentials: Vec<CredentialStatusItem> = snapshot
             .entries
             .into_iter()
-            .map(|entry| CredentialStatusItem {
-                id: entry.id,
-                priority: entry.priority,
-                disabled: entry.disabled,
-                failure_count: entry.failure_count,
-                is_current: entry.id == snapshot.current_id,
-                expires_at: entry.expires_at,
-                auth_method: entry.auth_method,
-                has_profile_arn: entry.has_profile_arn,
-                refresh_token_hash: entry.refresh_token_hash,
-                api_key_hash: entry.api_key_hash,
-                masked_api_key: entry.masked_api_key,
-                email: entry.email,
-                success_count: entry.success_count,
-                last_used_at: entry.last_used_at.clone(),
-                has_proxy: entry.has_proxy,
-                proxy_url: entry.proxy_url,
-                refresh_failure_count: entry.refresh_failure_count,
-                disabled_reason: entry.disabled_reason,
-                endpoint: entry.endpoint.unwrap_or_else(|| default_endpoint.clone()),
+            .map(|entry| {
+                let derived_api_key = if in_per_credential {
+                    Some(format!("{}-{}", self.base_api_key, entry.id))
+                } else {
+                    None
+                };
+                CredentialStatusItem {
+                    id: entry.id,
+                    priority: entry.priority,
+                    disabled: entry.disabled,
+                    failure_count: entry.failure_count,
+                    is_current: entry.id == snapshot.current_id,
+                    expires_at: entry.expires_at,
+                    auth_method: entry.auth_method,
+                    has_profile_arn: entry.has_profile_arn,
+                    refresh_token_hash: entry.refresh_token_hash,
+                    api_key_hash: entry.api_key_hash,
+                    masked_api_key: entry.masked_api_key,
+                    email: entry.email,
+                    success_count: entry.success_count,
+                    last_used_at: entry.last_used_at.clone(),
+                    has_proxy: entry.has_proxy,
+                    proxy_url: entry.proxy_url,
+                    refresh_failure_count: entry.refresh_failure_count,
+                    disabled_reason: entry.disabled_reason,
+                    endpoint: entry.endpoint.unwrap_or_else(|| default_endpoint.clone()),
+                    derived_api_key,
+                }
             })
             .collect();
 
@@ -286,9 +300,9 @@ impl AdminService {
         req: SetLoadBalancingModeRequest,
     ) -> Result<LoadBalancingModeResponse, AdminServiceError> {
         // 验证模式值
-        if req.mode != "priority" && req.mode != "balanced" {
+        if req.mode != "priority" && req.mode != "balanced" && req.mode != "per_credential" {
             return Err(AdminServiceError::InvalidCredential(
-                "mode 必须是 'priority' 或 'balanced'".to_string(),
+                "mode 必须是 'priority' / 'balanced' / 'per_credential' 之一".to_string(),
             ));
         }
 

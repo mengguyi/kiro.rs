@@ -62,6 +62,12 @@ pub struct CredentialStatusItem {
     pub disabled_reason: Option<String>,
     /// 端点名称（决定该凭据走哪套 Kiro API，已回退到默认端点）
     pub endpoint: String,
+    /// 派生 API Key（仅 per_credential 模式下填充：`{base}-{id}`）
+    ///
+    /// 前端展示在账户行上，提供"复制到 new-api 渠道"的便利。
+    /// 其他模式下为 None，避免泄露 base key。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub derived_api_key: Option<String>,
 }
 
 // ============ 操作请求 ============
@@ -184,7 +190,7 @@ pub struct BalanceResponse {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LoadBalancingModeResponse {
-    /// 当前模式（"priority" 或 "balanced"）
+    /// 当前模式（"priority" / "balanced" / "per_credential"）
     pub mode: String,
 }
 
@@ -192,7 +198,7 @@ pub struct LoadBalancingModeResponse {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SetLoadBalancingModeRequest {
-    /// 模式（"priority" 或 "balanced"）
+    /// 模式（"priority" / "balanced" / "per_credential"）
     pub mode: String,
 }
 

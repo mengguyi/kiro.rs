@@ -110,14 +110,30 @@ impl KiroProvider {
 
     /// 发送非流式 API 请求
     ///
-    /// 支持多凭据故障转移（见 [`Self::call_api_with_retry`]）
-    pub async fn call_api(&self, request_body: &str) -> anyhow::Result<reqwest::Response> {
-        self.call_api_with_retry(request_body, false).await
+    /// 支持多凭据故障转移（见 [`Self::call_api_with_retry`]）。
+    /// `credential_id = Some(_)` 时锁定指定凭据、跳过故障转移。
+    pub async fn call_api(
+        &self,
+        request_body: &str,
+        credential_id: Option<u64>,
+    ) -> anyhow::Result<reqwest::Response> {
+        self.call_api_with_retry(request_body, false, credential_id)
+            .await
     }
 
     /// 发送流式 API 请求
-    pub async fn call_api_stream(&self, request_body: &str) -> anyhow::Result<reqwest::Response> {
-        self.call_api_with_retry(request_body, true).await
+    pub async fn call_api_stream(
+        &self,
+        request_body: &str,
+        credential_id: Option<u64>,
+    ) -> anyhow::Result<reqwest::Response> {
+        self.call_api_with_retry(request_body, true, credential_id)
+            .await
+    }
+
+    /// 暴露当前负载均衡模式（auth_middleware 据此决定裸 base_key 是否 401）
+    pub fn load_balancing_mode(&self) -> String {
+        self.token_manager.get_load_balancing_mode()
     }
 
     /// 发送 MCP API 请求（WebSearch 等工具调用）
@@ -282,9 +298,15 @@ impl KiroProvider {
         &self,
         request_body: &str,
         is_stream: bool,
+        credential_id: Option<u64>,
     ) -> anyhow::Result<reqwest::Response> {
         let total_credentials = self.token_manager.total_count();
-        let max_retries = (total_credentials * MAX_RETRIES_PER_CREDENTIAL).min(MAX_TOTAL_RETRIES);
+        // per_credential 模式下不切号，max_retries 强制为 1，故障让 new-api 处理
+        let max_retries = if credential_id.is_some() {
+            1
+        } else {
+            (total_credentials * MAX_RETRIES_PER_CREDENTIAL).min(MAX_TOTAL_RETRIES)
+        };
         let mut last_error: Option<anyhow::Error> = None;
         let mut force_refreshed: HashSet<u64> = HashSet::new();
         let api_type = if is_stream { "流式" } else { "非流式" };
@@ -294,12 +316,19 @@ impl KiroProvider {
 
         for attempt in 0..max_retries {
             // 获取调用上下文（绑定 index、credentials、token）
-            let ctx = match self.token_manager.acquire_context(model.as_deref()).await {
-                Ok(c) => c,
-                Err(e) => {
-                    last_error = Some(e);
-                    continue;
-                }
+            let ctx = match credential_id {
+                Some(id) => match self.token_manager.acquire_context_by_id(id).await {
+                    Ok(c) => c,
+                    // 指定号失败：直接返回，不重试
+                    Err(e) => return Err(e),
+                },
+                None => match self.token_manager.acquire_context(model.as_deref()).await {
+                    Ok(c) => c,
+                    Err(e) => {
+                        last_error = Some(e);
+                        continue;
+                    }
+                },
             };
 
             let config = self.token_manager.config();
