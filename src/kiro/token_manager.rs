@@ -144,7 +144,7 @@ async fn refresh_social_token(
     config: &Config,
     proxy: Option<&ProxyConfig>,
 ) -> anyhow::Result<KiroCredentials> {
-    tracing::info!("正在刷新 Social Token...");
+    tracing::info!("凭据 #{} 正在刷新 Social Token...", credentials.id.unwrap_or(0));
 
     let refresh_token = credentials.refresh_token.as_ref().unwrap();
     // 优先级：凭据.auth_region > 凭据.region > config.auth_region > config.region
@@ -227,7 +227,7 @@ async fn refresh_idc_token(
     config: &Config,
     proxy: Option<&ProxyConfig>,
 ) -> anyhow::Result<KiroCredentials> {
-    tracing::info!("正在刷新 IdC Token...");
+    tracing::info!("凭据 #{} 正在刷新 IdC Token...", credentials.id.unwrap_or(0));
 
     let refresh_token = credentials.refresh_token.as_ref().unwrap();
     let client_id = credentials
@@ -828,6 +828,13 @@ impl MultiTokenManager {
             // 尝试获取/刷新 Token
             match self.try_ensure_token(id, &credentials).await {
                 Ok(ctx) => {
+                    let mode = self.load_balancing_mode.lock().clone();
+                    tracing::info!(
+                        "已选中凭据 #{} 处理请求 model={} (mode={})",
+                        ctx.id,
+                        model.unwrap_or("<unset>"),
+                        mode
+                    );
                     return Ok(ctx);
                 }
                 Err(e) => {
