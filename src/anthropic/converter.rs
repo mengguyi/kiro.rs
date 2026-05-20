@@ -912,25 +912,37 @@ mod tests {
 
     #[test]
     fn test_map_model_sonnet() {
-        assert!(
-            map_model("claude-sonnet-4-20250514")
-                .unwrap()
-                .contains("sonnet")
+        // map_model 严格对照版本号，只接受 4.5 / 4.6 后缀
+        assert_eq!(
+            map_model("claude-sonnet-4-5-20250929"),
+            Some("claude-sonnet-4.5".to_string())
         );
-        assert!(
-            map_model("claude-3-5-sonnet-20241022")
-                .unwrap()
-                .contains("sonnet")
+        assert_eq!(
+            map_model("claude-sonnet-4-6-20260301"),
+            Some("claude-sonnet-4.6".to_string())
         );
+        // 不带版本号的老式名字 / Claude 3.5 不再支持
+        assert!(map_model("claude-sonnet-4-20250514").is_none());
+        assert!(map_model("claude-3-5-sonnet-20241022").is_none());
     }
 
     #[test]
     fn test_map_model_opus() {
-        assert!(
-            map_model("claude-opus-4-20250514")
-                .unwrap()
-                .contains("opus")
+        // map_model 严格对照版本号，只接受 4.5 / 4.6 / 4.7
+        assert_eq!(
+            map_model("claude-opus-4-5-20251101"),
+            Some("claude-opus-4.5".to_string())
         );
+        assert_eq!(
+            map_model("claude-opus-4-6"),
+            Some("claude-opus-4.6".to_string())
+        );
+        assert_eq!(
+            map_model("claude-opus-4-7"),
+            Some("claude-opus-4.7".to_string())
+        );
+        // 不带版本号的老式名字不再支持
+        assert!(map_model("claude-opus-4-20250514").is_none());
     }
 
     #[test]
@@ -979,7 +991,7 @@ mod tests {
     fn test_determine_chat_trigger_type() {
         // 无工具时返回 MANUAL
         let req = MessagesRequest {
-            model: "claude-sonnet-4".to_string(),
+            model: "claude-sonnet-4-5".to_string(),
             max_tokens: 1024,
             messages: vec![],
             stream: false,
@@ -1083,7 +1095,7 @@ mod tests {
         schema.insert("properties".to_string(), serde_json::json!({}));
 
         let req = MessagesRequest {
-            model: "claude-sonnet-4".to_string(),
+            model: "claude-sonnet-4-5".to_string(),
             max_tokens: 1024,
             messages: vec![
                 AnthropicMessage {
@@ -1133,7 +1145,7 @@ mod tests {
         schema.insert("properties".to_string(), serde_json::json!({}));
 
         let req = MessagesRequest {
-            model: "claude-sonnet-4".to_string(),
+            model: "claude-sonnet-4-5".to_string(),
             max_tokens: 1024,
             messages: vec![
                 AnthropicMessage {
@@ -1196,7 +1208,7 @@ mod tests {
 
         // 创建一个请求，历史中有工具使用，但 tools 列表为空
         let req = MessagesRequest {
-            model: "claude-sonnet-4".to_string(),
+            model: "claude-sonnet-4-5".to_string(),
             max_tokens: 1024,
             messages: vec![
                 AnthropicMessage {
@@ -1295,7 +1307,7 @@ mod tests {
 
         // 测试带有 metadata 的请求，应该使用 session UUID 作为 conversationId
         let req = MessagesRequest {
-            model: "claude-sonnet-4".to_string(),
+            model: "claude-sonnet-4-5".to_string(),
             max_tokens: 1024,
             messages: vec![AnthropicMessage {
                 role: "user".to_string(),
@@ -1327,7 +1339,7 @@ mod tests {
 
         // 测试没有 metadata 的请求，应该生成新的 UUID
         let req = MessagesRequest {
-            model: "claude-sonnet-4".to_string(),
+            model: "claude-sonnet-4-5".to_string(),
             max_tokens: 1024,
             messages: vec![AnthropicMessage {
                 role: "user".to_string(),
@@ -1734,7 +1746,7 @@ mod tests {
         use super::super::types::Message as AnthropicMessage;
 
         let req = MessagesRequest {
-            model: "claude-sonnet-4".to_string(),
+            model: "claude-sonnet-4-5".to_string(),
             max_tokens: 1024,
             messages: vec![
                 AnthropicMessage {
