@@ -36,7 +36,9 @@ static RECENT: OnceLock<Arc<Mutex<VecDeque<ConsoleLogEntry>>>> = OnceLock::new()
 pub fn init() {
     let (tx, _rx) = broadcast::channel::<ConsoleLogEntry>(BROADCAST_CAPACITY);
     let _ = SENDER.set(tx);
-    let _ = RECENT.set(Arc::new(Mutex::new(VecDeque::with_capacity(RECENT_CAPACITY))));
+    let _ = RECENT.set(Arc::new(Mutex::new(VecDeque::with_capacity(
+        RECENT_CAPACITY,
+    ))));
 }
 
 /// 写入一条日志（Tracing Layer 调用）。

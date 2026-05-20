@@ -49,7 +49,10 @@ pub fn create_admin_router(state: AdminState) -> Router {
             "/config/load-balancing",
             get(get_load_balancing_mode).put(set_load_balancing_mode),
         )
-        .route("/requests", get(get_request_logs).delete(clear_request_logs))
+        .route(
+            "/requests",
+            get(get_request_logs).delete(clear_request_logs),
+        )
         .route(
             "/console-recent",
             get(get_console_recent).delete(clear_console_logs),
