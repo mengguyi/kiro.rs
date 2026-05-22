@@ -629,6 +629,11 @@ impl StreamContext {
         self.pending_intercept.take()
     }
 
+    /// 不消费的窥探 — agentic loop 在每个 chunk 后检查是否要退出本轮 stream
+    pub fn has_pending_intercept(&self) -> bool {
+        self.pending_intercept.is_some()
+    }
+
     /// 合成 `web_fetch_tool_result` SSE 块（成功）
     ///
     /// 对齐 Anthropic web_fetch_20260209（allowed_callers=direct 模式）：

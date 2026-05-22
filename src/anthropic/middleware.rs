@@ -32,6 +32,8 @@ pub struct AppState {
     pub kiro_provider: Option<Arc<KiroProvider>>,
     /// 是否开启非流式响应的 thinking 块提取
     pub extract_thinking: bool,
+    /// builtin 工具策略（web_fetch agentic 用，从 Config 派生）
+    pub builtin_policy: crate::builtin_tools::BuiltinPolicy,
 }
 
 impl AppState {
@@ -41,12 +43,19 @@ impl AppState {
             api_key: api_key.into(),
             kiro_provider: None,
             extract_thinking,
+            builtin_policy: crate::builtin_tools::BuiltinPolicy::default(),
         }
     }
 
     /// 设置 KiroProvider
     pub fn with_kiro_provider(mut self, provider: KiroProvider) -> Self {
         self.kiro_provider = Some(Arc::new(provider));
+        self
+    }
+
+    /// 设置 builtin 策略（从 Config 派生）
+    pub fn with_builtin_policy(mut self, policy: crate::builtin_tools::BuiltinPolicy) -> Self {
+        self.builtin_policy = policy;
         self
     }
 }

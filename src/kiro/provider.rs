@@ -133,6 +133,16 @@ impl KiroProvider {
         self.token_manager.get_load_balancing_mode()
     }
 
+    /// 全局代理配置（builtin web_fetch 走和 Kiro API 同样的出口）
+    pub fn global_proxy(&self) -> Option<&ProxyConfig> {
+        self.global_proxy.as_ref()
+    }
+
+    /// TLS 后端（builtin web_fetch 复用同一构建配置）
+    pub fn tls_backend(&self) -> TlsBackend {
+        self.tls_backend
+    }
+
     /// 发送 MCP API 请求（WebSearch 等工具调用）
     pub async fn call_mcp(&self, request_body: &str) -> anyhow::Result<reqwest::Response> {
         self.call_mcp_with_retry(request_body).await

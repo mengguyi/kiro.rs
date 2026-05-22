@@ -39,8 +39,9 @@ pub fn create_router_with_provider(
     api_key: impl Into<String>,
     kiro_provider: Option<KiroProvider>,
     extract_thinking: bool,
+    builtin_policy: crate::builtin_tools::BuiltinPolicy,
 ) -> Router {
-    let mut state = AppState::new(api_key, extract_thinking);
+    let mut state = AppState::new(api_key, extract_thinking).with_builtin_policy(builtin_policy);
     if let Some(provider) = kiro_provider {
         state = state.with_kiro_provider(provider);
     }

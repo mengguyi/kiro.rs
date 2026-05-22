@@ -21,6 +21,7 @@ use std::time::Duration;
 use tokio::time::interval;
 use uuid::Uuid;
 
+use super::agentic;
 use super::converter::{ConversionError, convert_request};
 use super::middleware::{AppState, CredentialId};
 use super::stream::{BufferedStreamContext, SseEvent, StreamContext};
@@ -320,8 +321,9 @@ pub async fn post_messages(
     };
 
     // 构建 Kiro 请求（profile_arn 由 provider 层根据实际凭据注入）
+    // agentic 续写时可能需要重新 convert，所以 conversion_state 用 clone
     let kiro_request = KiroRequest {
-        conversation_state: conversion_result.conversation_state,
+        conversation_state: conversion_result.conversation_state.clone(),
         profile_arn: None,
     };
 
@@ -345,9 +347,9 @@ pub async fn post_messages(
     // 估算输入 tokens
     let input_tokens = token::count_all_tokens(
         payload.model.clone(),
-        payload.system,
-        payload.messages,
-        payload.tools,
+        payload.system.clone(),
+        payload.messages.clone(),
+        payload.tools.clone(),
     ) as i32;
 
     // 检查是否启用了thinking
@@ -357,20 +359,22 @@ pub async fn post_messages(
         .map(|t| t.is_enabled())
         .unwrap_or(false);
 
-    let tool_name_map = conversion_result.tool_name_map;
-
     if payload.stream {
-        // 流式响应
-        handle_stream_request(
+        // 流式响应（agentic loop：检测 web_fetch builtin → 本地执行 → 重发）
+        let proxy = provider.global_proxy().cloned();
+        let tls_backend = provider.tls_backend();
+        agentic::handle(agentic::AgenticArgs {
             provider,
-            &request_body,
-            &payload.model,
-            input_tokens,
+            initial_request_body: request_body,
+            payload,
+            conversion: conversion_result,
             thinking_enabled,
-            tool_name_map,
             credential_id,
-        )
-        .await
+            policy: state.builtin_policy.clone(),
+            proxy,
+            tls_backend,
+            input_tokens,
+        })
     } else {
         // 非流式响应：仅在配置开启时提取 thinking 块
         let extract_thinking = state.extract_thinking && thinking_enabled;
@@ -380,7 +384,7 @@ pub async fn post_messages(
             &payload.model,
             input_tokens,
             extract_thinking,
-            tool_name_map,
+            conversion_result.tool_name_map,
             credential_id,
         )
         .await
