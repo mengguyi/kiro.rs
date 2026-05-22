@@ -55,6 +55,7 @@ impl BuiltinKind {
 /// 由 [`crate::anthropic::converter::convert_tools`] 在协议转换时填充，
 /// 由 stream 层的 agentic loop 读取并应用。
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // anthropic_type / citations_enabled 保留供日志/未来扩展使用
 pub struct BuiltinToolMeta {
     pub kind: BuiltinKind,
     /// Anthropic 协议层的 tool type 全名（如 `"web_fetch_20260209"`），保留用于日志

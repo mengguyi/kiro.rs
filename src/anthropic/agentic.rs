@@ -12,9 +12,9 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{StatusCode, header};
-use axum::response::{IntoResponse, Json, Response};
+use axum::response::Response;
 use bytes::Bytes;
-use futures::{Stream, StreamExt};
+use futures::StreamExt;
 use serde_json::json;
 use tokio::sync::mpsc;
 use tokio::time::interval;
@@ -30,7 +30,7 @@ use crate::model::config::TlsBackend;
 
 use super::converter::{ConversionResult, convert_request};
 use super::stream::StreamContext;
-use super::types::{ErrorResponse, MessagesRequest};
+use super::types::MessagesRequest;
 
 /// Ping 事件间隔 — 同原实现，防反代切流
 const PING_INTERVAL_SECS: u64 = 25;
@@ -134,7 +134,15 @@ async fn run_agentic(tx: mpsc::Sender<Result<Bytes, Infallible>>, args: AgenticA
 
     let mut req_body = initial_request_body;
     let mut iter: u32 = 0;
-    let hard_limit = policy.web_fetch_max_uses_hard_limit.max(1);
+    // 客户端 max_uses 受 policy 硬上限截断（policy.effective_max_uses）；
+    // 若 registry 里有多个 builtin（未来扩展），取所有 meta 的最严限制
+    let effective_limit = conversion
+        .builtin_tools
+        .values()
+        .map(|m| policy.effective_max_uses(m))
+        .min()
+        .unwrap_or(policy.web_fetch_max_uses_hard_limit)
+        .max(1);
 
     loop {
         iter += 1;
@@ -155,11 +163,11 @@ async fn run_agentic(tx: mpsc::Sender<Result<Bytes, Infallible>>, args: AgenticA
             break;
         };
 
-        // hard limit
-        if iter >= hard_limit {
+        // 客户端 max_uses + 管理员 hard_limit 双重保护
+        if iter >= effective_limit {
             tracing::warn!(
-                "agentic iter #{} 达到硬上限 {}，强制以 url_not_accessible 终止",
-                iter, hard_limit
+                "agentic iter #{} 达到生效上限 {}，强制以 url_not_accessible 终止",
+                iter, effective_limit
             );
             let evs = ctx.emit_web_fetch_result_error(
                 &p.srv_tool_use_id,
@@ -353,14 +361,3 @@ async fn send_provider_error(tx: &mpsc::Sender<Result<Bytes, Infallible>>, e: an
     let _ = tx.send(Ok(Bytes::from(err_event))).await;
 }
 
-/// 给 [`Response`] builder 一个错误的快捷构造（在 provider 完全不可用时用）
-pub fn provider_unavailable_response() -> Response {
-    (
-        StatusCode::SERVICE_UNAVAILABLE,
-        Json(ErrorResponse::new(
-            "service_unavailable",
-            "Kiro API provider not configured",
-        )),
-    )
-        .into_response()
-}
