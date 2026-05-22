@@ -658,13 +658,21 @@ impl StreamContext {
             source["truncated"] = json!(true);
         }
 
-        let mut document = json!({
+        // Anthropic 协议要求 content.content.title 始终是 string（@ai-sdk/anthropic
+        // 的 Zod schema 严格校验，missing 会导致客户端整体丢弃 block 并触发死循环重试）。
+        // HTML 没 `<title>` 时（如 React SPA）fallback 到 URL host。
+        let title = result.title.clone().unwrap_or_else(|| {
+            url::Url::parse(&result.url)
+                .ok()
+                .and_then(|u| u.host_str().map(|h| h.to_string()))
+                .unwrap_or_else(|| "Untitled".to_string())
+        });
+
+        let document = json!({
             "type": "document",
             "source": source,
+            "title": title,
         });
-        if let Some(title) = &result.title {
-            document["title"] = json!(title);
-        }
 
         let content = json!({
             "type": "web_fetch_result",
@@ -1554,6 +1562,56 @@ mod tests {
         assert_eq!(content["content"]["title"], "Example");
 
         assert!(evs.iter().any(|e| e.event == "content_block_stop"));
+    }
+
+    #[test]
+    fn emit_web_fetch_result_success_title_fallback_when_missing() {
+        // 回归：HTML 没 <title>（如 React SPA） → 必须 fallback 到 URL host，
+        // 而不是字段缺失。Cherry Studio 的 Zod schema 严格要求 title=string，
+        // 缺失会导致客户端死循环重试 fetch。
+        use crate::builtin_tools::web_fetch::FetchOk;
+
+        let mut ctx =
+            StreamContext::new_with_thinking("claude-opus-4-7", 100, false, HashMap::new());
+        let _ = ctx.generate_initial_events();
+
+        let ok = FetchOk {
+            url: "https://x.com/mengguyi".to_string(),
+            title: None, // SPA 没 <title>
+            retrieved_at: "2026-05-22T18:04:41Z".to_string(),
+            markdown: "<react-app>".to_string(),
+            truncated: false,
+        };
+        let evs = ctx.emit_web_fetch_result_success("srvtoolu_t", &ok);
+        let start = evs.iter().find(|e| e.event == "content_block_start").unwrap();
+        let title = &start.data["content_block"]["content"]["content"]["title"];
+
+        assert!(title.is_string(), "title 必须是 string，不能 missing/null: {title:?}");
+        assert_eq!(title.as_str().unwrap(), "x.com");
+    }
+
+    #[test]
+    fn emit_web_fetch_result_success_title_fallback_when_url_invalid() {
+        use crate::builtin_tools::web_fetch::FetchOk;
+
+        let mut ctx =
+            StreamContext::new_with_thinking("claude-opus-4-7", 100, false, HashMap::new());
+        let _ = ctx.generate_initial_events();
+
+        let ok = FetchOk {
+            url: "not-a-valid-url".to_string(),
+            title: None,
+            retrieved_at: "2026-01-01T00:00:00Z".to_string(),
+            markdown: "x".to_string(),
+            truncated: false,
+        };
+        let evs = ctx.emit_web_fetch_result_success("srvtoolu_t", &ok);
+        let title = &evs
+            .iter()
+            .find(|e| e.event == "content_block_start")
+            .unwrap()
+            .data["content_block"]["content"]["content"]["title"];
+        assert_eq!(title.as_str().unwrap(), "Untitled");
     }
 
     #[test]
