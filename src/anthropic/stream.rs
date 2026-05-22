@@ -533,6 +533,33 @@ pub struct StreamContext {
     /// 是否需要剥离 thinking 内容开头的换行符
     /// 模型输出 `<thinking>\n` 时，`\n` 可能与标签在同一 chunk 或下一 chunk
     strip_thinking_leading_newline: bool,
+    /// builtin tool registry（从 ConversionResult.builtin_tools 传入）
+    /// key = function tool 名（`web_fetch_internal_xxx`），value = 客户端声明 meta
+    pub builtin_registry: HashMap<String, crate::builtin_tools::BuiltinToolMeta>,
+    /// builtin tool 的 input JSON 累积（按 AWS Q tool_use_id 聚合）
+    builtin_input_buffers: HashMap<String, String>,
+    /// AWS Q tool_use_id → 我们给客户端的 `srvtoolu_xxx`（每个 builtin 调用一对一）
+    builtin_srv_ids: HashMap<String, String>,
+    /// builtin 触发信号：stop=true 时填充，外层 agentic loop 取走执行
+    pending_intercept: Option<PendingIntercept>,
+}
+
+/// builtin tool 拦截信号
+///
+/// stream 层把 `tool_use(name=web_fetch_internal_xxx, stop=true)` 转成此结构，
+/// 外层 agentic loop 用它执行 builtin、合成 tool_result 块、发起第二次 AWS Q 请求。
+#[derive(Debug, Clone)]
+pub struct PendingIntercept {
+    /// AWS Q 端 client function tool 名（用于查 builtin_registry）
+    pub builtin_name: String,
+    /// AWS Q 给的 tool_use_id（用于后续 messages 续写的 tool_use / tool_result 配对）
+    pub tool_use_id: String,
+    /// 我们给客户端 SSE 用的 `srvtoolu_xxx`（用于 server_tool_use_result.tool_use_id）
+    pub srv_tool_use_id: String,
+    /// 完整 input JSON（累积所有 partial_json 段拼成）
+    pub input_json: String,
+    /// 该 server_tool_use 块在客户端流里的 content_block index
+    pub block_index: i32,
 }
 
 impl StreamContext {
@@ -559,7 +586,31 @@ impl StreamContext {
             thinking_block_index: None,
             text_block_index: None,
             strip_thinking_leading_newline: false,
+            builtin_registry: HashMap::new(),
+            builtin_input_buffers: HashMap::new(),
+            builtin_srv_ids: HashMap::new(),
+            pending_intercept: None,
         }
+    }
+
+    /// 链式注入 builtin tool registry（M3 ConversionResult.builtin_tools）
+    pub fn with_builtin_registry(
+        mut self,
+        registry: HashMap<String, crate::builtin_tools::BuiltinToolMeta>,
+    ) -> Self {
+        self.builtin_registry = registry;
+        self
+    }
+
+    /// 外层 agentic loop 取走待处理的 builtin 触发信号（消费式 take）
+    ///
+    /// 返回 `Some` 时，调用方负责：
+    /// 1. 执行 builtin（例如 fetch_url）
+    /// 2. 合成对应的 `*_tool_result` SSE 块
+    /// 3. 把 assistant partial response + user tool_result 拼到 messages
+    /// 4. 重新发起 AWS Q 请求
+    pub fn take_pending_intercept(&mut self) -> Option<PendingIntercept> {
+        self.pending_intercept.take()
     }
 
     /// 生成 message_start 事件
@@ -976,6 +1027,13 @@ impl StreamContext {
             idx
         };
 
+        // ─── builtin 分支：如果是 web_fetch_internal_xxx 等本地代实现的 server tool，
+        //    走 server_tool_use 协议 + set pending_intercept 让外层 agentic loop 处理 ───
+        if let Some(meta) = self.builtin_registry.get(&tool_use.name).cloned() {
+            self.emit_builtin_tool_use(tool_use, block_index, &meta, &mut events);
+            return events;
+        }
+
         // 还原工具名称（如果有映射）
         let original_name = self
             .tool_name_map
@@ -1027,6 +1085,105 @@ impl StreamContext {
         }
 
         events
+    }
+
+    /// builtin server tool 的流式合成：把 AWS Q 的 `tool_use(web_fetch_internal_xxx, ...)`
+    /// 转成 Anthropic 客户端期望的 `server_tool_use` SSE 块序列：
+    /// `content_block_start(server_tool_use)` + 增量 `input_json_delta` + `content_block_stop`
+    ///
+    /// stop=true 时填充 [`Self::pending_intercept`]，让外层 agentic loop
+    /// 取走、执行 builtin、合成对应 `*_tool_result` 块、发起第二次 AWS Q 请求。
+    fn emit_builtin_tool_use(
+        &mut self,
+        tool_use: &crate::kiro::model::events::ToolUseEvent,
+        block_index: i32,
+        meta: &crate::builtin_tools::BuiltinToolMeta,
+        events: &mut Vec<SseEvent>,
+    ) {
+        // 获取或生成此调用的客户端 server_tool_use id
+        let srv_id = if let Some(id) = self.builtin_srv_ids.get(&tool_use.tool_use_id) {
+            id.clone()
+        } else {
+            // Anthropic 真实 srvtoolu id 是 srvtoolu_<22 ASCII alnum>，这里用 base32 风格 uuid 替代
+            let raw = Uuid::new_v4().to_string().replace('-', "");
+            let id = format!("srvtoolu_{}", &raw[..22]);
+            self.builtin_srv_ids
+                .insert(tool_use.tool_use_id.clone(), id.clone());
+            id
+        };
+
+        // 第一次出现该 tool_use_id：发 content_block_start(server_tool_use)
+        let first_seen = !self.builtin_input_buffers.contains_key(&tool_use.tool_use_id);
+        if first_seen {
+            self.builtin_input_buffers
+                .insert(tool_use.tool_use_id.clone(), String::new());
+
+            let start_events = self.state_manager.handle_content_block_start(
+                block_index,
+                "tool_use", // 走 state_manager 的 tool_use 分支以关掉前面的 text 块
+                json!({
+                    "type": "content_block_start",
+                    "index": block_index,
+                    "content_block": {
+                        "type": "server_tool_use",
+                        "id": srv_id,
+                        "name": meta.kind.anthropic_tool_name(),
+                        "input": {}
+                    }
+                }),
+            );
+            events.extend(start_events);
+        }
+
+        // 累积 input JSON
+        if !tool_use.input.is_empty() {
+            if let Some(buf) = self.builtin_input_buffers.get_mut(&tool_use.tool_use_id) {
+                buf.push_str(&tool_use.input);
+            }
+            self.output_tokens += (tool_use.input.len() as i32 + 3) / 4;
+
+            if let Some(delta_event) = self.state_manager.handle_content_block_delta(
+                block_index,
+                json!({
+                    "type": "content_block_delta",
+                    "index": block_index,
+                    "delta": {
+                        "type": "input_json_delta",
+                        "partial_json": tool_use.input
+                    }
+                }),
+            ) {
+                events.push(delta_event);
+            }
+        }
+
+        // stop=true：发 content_block_stop + 填 pending_intercept
+        if tool_use.stop {
+            if let Some(stop_event) = self.state_manager.handle_content_block_stop(block_index) {
+                events.push(stop_event);
+            }
+
+            let input_json = self
+                .builtin_input_buffers
+                .remove(&tool_use.tool_use_id)
+                .unwrap_or_default();
+
+            tracing::info!(
+                "builtin {} 拦截：tool_use_id={} srv_id={} input={}",
+                meta.kind.anthropic_tool_name(),
+                tool_use.tool_use_id,
+                srv_id,
+                input_json
+            );
+
+            self.pending_intercept = Some(PendingIntercept {
+                builtin_name: tool_use.name.clone(),
+                tool_use_id: tool_use.tool_use_id.clone(),
+                srv_tool_use_id: srv_id,
+                input_json,
+                block_index,
+            });
+        }
     }
 
     /// 生成最终事件序列
@@ -1239,6 +1396,124 @@ fn estimate_tokens(text: &str) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::builtin_tools::{BuiltinKind, BuiltinToolMeta};
+    use crate::kiro::model::events::ToolUseEvent;
+
+    /// 构造 builtin registry：name → meta
+    fn registry_with_web_fetch(name: &str) -> HashMap<String, BuiltinToolMeta> {
+        let mut map = HashMap::new();
+        map.insert(
+            name.to_string(),
+            BuiltinToolMeta {
+                kind: BuiltinKind::WebFetch,
+                anthropic_type: "web_fetch_20260209".to_string(),
+                max_uses: Some(3),
+                allowed_domains: None,
+                blocked_domains: None,
+                max_content_tokens: None,
+                citations_enabled: false,
+            },
+        );
+        map
+    }
+
+    #[test]
+    fn builtin_tool_use_emits_server_tool_use_block() {
+        let mut ctx = StreamContext::new_with_thinking("claude-opus-4-7", 100, false, HashMap::new())
+            .with_builtin_registry(registry_with_web_fetch("web_fetch_internal_abc"));
+        // 跳过 message_start / 初始 text 块的开销，直接处理 tool_use
+        let _ = ctx.generate_initial_events();
+
+        // 第一段 input partial
+        let ev1 = ToolUseEvent {
+            name: "web_fetch_internal_abc".to_string(),
+            tool_use_id: "tu_001".to_string(),
+            input: "{\"url\":".to_string(),
+            stop: false,
+        };
+        let out1 = ctx.process_tool_use(&ev1);
+        // 应该有 content_block_start(server_tool_use) + content_block_delta
+        let has_server_tool_use = out1.iter().any(|e| {
+            e.event == "content_block_start"
+                && e.data
+                    .get("content_block")
+                    .and_then(|cb| cb.get("type"))
+                    .and_then(|v| v.as_str())
+                    == Some("server_tool_use")
+        });
+        assert!(has_server_tool_use, "应该 emit server_tool_use 块: {out1:?}");
+        assert!(ctx.take_pending_intercept().is_none(), "stop=false 不应触发");
+
+        // 第二段 input partial + stop=true
+        let ev2 = ToolUseEvent {
+            name: "web_fetch_internal_abc".to_string(),
+            tool_use_id: "tu_001".to_string(),
+            input: " \"https://example.com\"}".to_string(),
+            stop: true,
+        };
+        let _ = ctx.process_tool_use(&ev2);
+
+        // 此时应该有 pending_intercept
+        let intercept = ctx.take_pending_intercept().expect("stop=true 应触发拦截");
+        assert_eq!(intercept.builtin_name, "web_fetch_internal_abc");
+        assert_eq!(intercept.tool_use_id, "tu_001");
+        assert!(intercept.srv_tool_use_id.starts_with("srvtoolu_"));
+        assert_eq!(intercept.input_json, "{\"url\": \"https://example.com\"}");
+    }
+
+    #[test]
+    fn non_builtin_tool_use_passes_through_unchanged() {
+        let mut ctx =
+            StreamContext::new_with_thinking("claude-opus-4-7", 100, false, HashMap::new());
+        let _ = ctx.generate_initial_events();
+
+        let ev = ToolUseEvent {
+            name: "Bash".to_string(),
+            tool_use_id: "tu_bash_001".to_string(),
+            input: "{\"command\":\"ls\"}".to_string(),
+            stop: true,
+        };
+        let out = ctx.process_tool_use(&ev);
+
+        // 应该走老路径 — content_block 里 type 是 "tool_use" 不是 "server_tool_use"
+        let has_tool_use = out.iter().any(|e| {
+            e.event == "content_block_start"
+                && e.data
+                    .get("content_block")
+                    .and_then(|cb| cb.get("type"))
+                    .and_then(|v| v.as_str())
+                    == Some("tool_use")
+        });
+        assert!(has_tool_use);
+        assert!(ctx.take_pending_intercept().is_none());
+    }
+
+    #[test]
+    fn builtin_srv_id_stable_across_chunks() {
+        let mut ctx = StreamContext::new_with_thinking("claude-opus-4-7", 100, false, HashMap::new())
+            .with_builtin_registry(registry_with_web_fetch("web_fetch_internal_abc"));
+        let _ = ctx.generate_initial_events();
+
+        let ev1 = ToolUseEvent {
+            name: "web_fetch_internal_abc".to_string(),
+            tool_use_id: "tu_xyz".to_string(),
+            input: "{}".to_string(),
+            stop: false,
+        };
+        let _ = ctx.process_tool_use(&ev1);
+        let id_after_first = ctx.builtin_srv_ids.get("tu_xyz").cloned();
+        assert!(id_after_first.is_some());
+
+        let ev2 = ToolUseEvent {
+            name: "web_fetch_internal_abc".to_string(),
+            tool_use_id: "tu_xyz".to_string(),
+            input: "".to_string(),
+            stop: true,
+        };
+        let _ = ctx.process_tool_use(&ev2);
+        let intercept = ctx.take_pending_intercept().unwrap();
+        assert_eq!(intercept.srv_tool_use_id, id_after_first.unwrap());
+    }
 
     #[test]
     fn test_sse_event_format() {
