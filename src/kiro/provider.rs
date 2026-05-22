@@ -116,6 +116,7 @@ impl KiroProvider {
     ) -> anyhow::Result<reqwest::Response> {
         self.call_api_with_retry(request_body, false, credential_id)
             .await
+            .map(|(resp, _)| resp)
     }
 
     /// 发送流式 API 请求
@@ -126,6 +127,20 @@ impl KiroProvider {
     ) -> anyhow::Result<reqwest::Response> {
         self.call_api_with_retry(request_body, true, credential_id)
             .await
+            .map(|(resp, _)| resp)
+    }
+
+    /// 发送流式 API 请求并返回实际选中的凭据 ID
+    ///
+    /// agentic web_fetch 用这个变体获取"当前对话用的是哪个号"，进而走该号的
+    /// effective_proxy 抓取目标 URL（保持"一号一 IP"语义）。
+    pub async fn call_api_stream_with_meta(
+        &self,
+        request_body: &str,
+        credential_id: Option<u64>,
+    ) -> anyhow::Result<(reqwest::Response, u64)> {
+        self.call_api_with_retry(request_body, true, credential_id)
+            .await
     }
 
     /// 暴露当前负载均衡模式（auth_middleware 据此决定裸 base_key 是否 401）
@@ -133,7 +148,7 @@ impl KiroProvider {
         self.token_manager.get_load_balancing_mode()
     }
 
-    /// 全局代理配置（builtin web_fetch 走和 Kiro API 同样的出口）
+    /// 全局代理配置（fallback：未指定 cred 时用）
     pub fn global_proxy(&self) -> Option<&ProxyConfig> {
         self.global_proxy.as_ref()
     }
@@ -141,6 +156,13 @@ impl KiroProvider {
     /// TLS 后端（builtin web_fetch 复用同一构建配置）
     pub fn tls_backend(&self) -> TlsBackend {
         self.tls_backend
+    }
+
+    /// 指定凭据的 effective_proxy（凭据级 > 全局 > 无）
+    ///
+    /// agentic web_fetch 据此走和当前对话凭据同样的出口 IP。
+    pub fn effective_proxy_for_credential(&self, id: u64) -> Option<ProxyConfig> {
+        self.token_manager.get_effective_proxy_for(id)
     }
 
     /// 发送 MCP API 请求（WebSearch 等工具调用）
@@ -311,7 +333,7 @@ impl KiroProvider {
         request_body: &str,
         is_stream: bool,
         credential_id: Option<u64>,
-    ) -> anyhow::Result<reqwest::Response> {
+    ) -> anyhow::Result<(reqwest::Response, u64)> {
         let total_credentials = self.token_manager.total_count();
         // per_credential 模式下不切号，max_retries 强制为 1，故障让 new-api 处理
         let max_retries = if credential_id.is_some() {
@@ -397,8 +419,9 @@ impl KiroProvider {
 
             // 成功响应
             if status.is_success() {
-                self.token_manager.report_success(ctx.id);
-                return Ok(response);
+                let cred_id = ctx.id;
+                self.token_manager.report_success(cred_id);
+                return Ok((response, cred_id));
             }
 
             // 失败响应：读取 body 用于日志/错误信息

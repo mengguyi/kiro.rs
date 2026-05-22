@@ -1912,6 +1912,20 @@ impl MultiTokenManager {
         self.load_balancing_mode.lock().clone()
     }
 
+    /// 获取指定凭据的 effective_proxy（凭据级代理 > 全局 > 无）
+    ///
+    /// 用于 agentic web_fetch 走和当前 Kiro API 调用同样的出口 IP，
+    /// 保持 "一号一 IP" 语义。返回 `None` 表示直连（即使全局配置了代理，
+    /// 该号也可能用 `"direct"` 显式绕过）。
+    pub fn get_effective_proxy_for(
+        &self,
+        id: u64,
+    ) -> Option<crate::http_client::ProxyConfig> {
+        let entries = self.entries.lock();
+        let cred = entries.iter().find(|e| e.id == id)?;
+        cred.credentials.effective_proxy(self.proxy.as_ref())
+    }
+
     fn persist_load_balancing_mode(&self, mode: &str) -> anyhow::Result<()> {
         use anyhow::Context;
 
@@ -2639,5 +2653,72 @@ mod tests {
 
         assert_eq!(credentials.effective_auth_region(&config), "auth-only");
         assert_eq!(credentials.effective_api_region(&config), "api-only");
+    }
+
+    // ============ get_effective_proxy_for（agentic web_fetch 用）============
+
+    #[test]
+    fn test_effective_proxy_per_credential_overrides_global() {
+        use crate::http_client::ProxyConfig;
+
+        let config = Config::default();
+        let mut cred = KiroCredentials::default();
+        cred.proxy_url = Some("http://cred-proxy:8080".to_string());
+
+        let global = ProxyConfig::new("http://global-proxy:8080");
+        let manager =
+            MultiTokenManager::new(config, vec![cred], Some(global), None, false).unwrap();
+
+        let effective = manager.get_effective_proxy_for(1).expect("有代理");
+        assert_eq!(effective.url, "http://cred-proxy:8080");
+    }
+
+    #[test]
+    fn test_effective_proxy_falls_back_to_global() {
+        use crate::http_client::ProxyConfig;
+
+        let config = Config::default();
+        let cred = KiroCredentials::default(); // 无凭据级代理
+
+        let global = ProxyConfig::new("http://global:8080");
+        let manager =
+            MultiTokenManager::new(config, vec![cred], Some(global), None, false).unwrap();
+
+        let effective = manager.get_effective_proxy_for(1).expect("fallback 全局");
+        assert_eq!(effective.url, "http://global:8080");
+    }
+
+    #[test]
+    fn test_effective_proxy_direct_bypasses_global() {
+        use crate::http_client::ProxyConfig;
+
+        let config = Config::default();
+        let mut cred = KiroCredentials::default();
+        cred.proxy_url = Some("direct".to_string()); // 显式直连
+
+        let global = ProxyConfig::new("http://global:8080");
+        let manager =
+            MultiTokenManager::new(config, vec![cred], Some(global), None, false).unwrap();
+
+        // direct 应绕过全局代理
+        assert!(manager.get_effective_proxy_for(1).is_none());
+    }
+
+    #[test]
+    fn test_effective_proxy_no_proxy_configured() {
+        let config = Config::default();
+        let cred = KiroCredentials::default();
+        let manager = MultiTokenManager::new(config, vec![cred], None, None, false).unwrap();
+
+        assert!(manager.get_effective_proxy_for(1).is_none());
+    }
+
+    #[test]
+    fn test_effective_proxy_unknown_credential_returns_none() {
+        let config = Config::default();
+        let cred = KiroCredentials::default();
+        let manager = MultiTokenManager::new(config, vec![cred], None, None, false).unwrap();
+
+        assert!(manager.get_effective_proxy_for(999).is_none());
     }
 }

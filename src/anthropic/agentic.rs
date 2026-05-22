@@ -113,10 +113,16 @@ async fn run_agentic(tx: mpsc::Sender<Result<Bytes, Infallible>>, args: AgenticA
         thinking_enabled,
         credential_id,
         policy,
-        proxy,
+        proxy: global_proxy_fallback,
         tls_backend,
         input_tokens,
     } = args;
+    // 跟踪最近一次 AWS Q 实际使用的 cred id —— per_credential 模式下 ==
+    // credential_id；priority / balanced 模式下 token_manager 内部选号，
+    // 由 call_api_stream_with_meta 返回。用于让后续 web_fetch 走该号 effective_proxy。
+    // 进 loop 前还没发起请求，必为 None；第一次 call_api_stream_with_meta 成功后填充
+    #[allow(unused_assignments)]
+    let mut last_used_cred_id: Option<u64> = None;
 
     let mut ctx = StreamContext::new_with_thinking(
         payload.model.clone(),
@@ -148,13 +154,17 @@ async fn run_agentic(tx: mpsc::Sender<Result<Bytes, Infallible>>, args: AgenticA
         iter += 1;
         tracing::debug!("agentic iter #{} 发起 AWS Q 请求", iter);
 
-        let response = match provider.call_api_stream(&req_body, credential_id).await {
-            Ok(r) => r,
+        let (response, used_cred) = match provider
+            .call_api_stream_with_meta(&req_body, credential_id)
+            .await
+        {
+            Ok(pair) => pair,
             Err(e) => {
                 send_provider_error(&tx, e).await;
                 break;
             }
         };
+        last_used_cred_id = Some(used_cred);
 
         consume_response(&tx, &mut ctx, response).await;
 
@@ -200,10 +210,21 @@ async fn run_agentic(tx: mpsc::Sender<Result<Bytes, Infallible>>, args: AgenticA
             }
         };
 
+        // 决定 fetch 走哪个代理：当前对话用的凭据 effective_proxy
+        // （凭据 proxy_url > config.proxyUrl > 直连），保持 "一号一 IP" 语义
+        let fetch_proxy = last_used_cred_id
+            .and_then(|id| provider.effective_proxy_for_credential(id))
+            .or_else(|| global_proxy_fallback.clone());
+
         // 执行 fetch
-        tracing::info!("agentic 执行 web_fetch url={}", url);
+        tracing::info!(
+            "agentic 执行 web_fetch url={} cred=#{:?} proxy={:?}",
+            url,
+            last_used_cred_id,
+            fetch_proxy.as_ref().map(|p| p.url.as_str())
+        );
         let fetch_result =
-            web_fetch::fetch_url(&url, &meta, &policy, proxy.as_ref(), tls_backend).await;
+            web_fetch::fetch_url(&url, &meta, &policy, fetch_proxy.as_ref(), tls_backend).await;
 
         // 合成 tool_result SSE 块
         let (result_evs, tool_result_text_for_model) = match &fetch_result {
