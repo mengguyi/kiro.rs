@@ -105,6 +105,36 @@ pub struct Config {
     #[serde(default)]
     pub endpoints: HashMap<String, serde_json::Value>,
 
+    /// `web_fetch` builtin 在单次对话内的硬上限调用次数（防 agentic loop 失控）
+    /// 客户端 `max_uses` 即使大于此值也会被截断
+    #[serde(default = "default_web_fetch_hard_limit")]
+    pub web_fetch_max_uses_hard_limit: u32,
+
+    /// 永远禁止抓取的域名（管理员维护，客户端 `allowed_domains` 也不能覆盖）
+    /// 精确匹配 host（含完整子域，如 `"evil.com"` 拦 `"x.evil.com"`）
+    #[serde(default)]
+    pub web_fetch_blocked_domains: Vec<String>,
+
+    /// 是否禁止抓取私有/loopback/link-local 网段（SSRF 防护底线，强烈不建议关）
+    #[serde(default = "default_true")]
+    pub web_fetch_block_private_networks: bool,
+
+    /// 客户端没给 `max_uses` 时的默认值
+    #[serde(default = "default_web_fetch_default_uses")]
+    pub web_fetch_default_max_uses: u32,
+
+    /// 客户端没给 `max_content_tokens` 时的默认值（≈ 20 万字符）
+    #[serde(default = "default_web_fetch_default_content_tokens")]
+    pub web_fetch_default_max_content_tokens: u32,
+
+    /// 单次 HTTP 响应体字节硬上限（超出截断），默认 10 MB
+    #[serde(default = "default_web_fetch_size_limit")]
+    pub web_fetch_response_size_limit_bytes: usize,
+
+    /// 单次 HTTP 总超时（秒），默认 30s
+    #[serde(default = "default_web_fetch_timeout")]
+    pub web_fetch_request_timeout_secs: u64,
+
     /// 配置文件路径（运行时元数据，不写入 JSON）
     #[serde(skip)]
     config_path: Option<PathBuf>,
@@ -155,6 +185,30 @@ fn default_endpoint() -> String {
     crate::kiro::endpoint::ide::IDE_ENDPOINT_NAME.to_string()
 }
 
+fn default_true() -> bool {
+    true
+}
+
+fn default_web_fetch_hard_limit() -> u32 {
+    20
+}
+
+fn default_web_fetch_default_uses() -> u32 {
+    5
+}
+
+fn default_web_fetch_default_content_tokens() -> u32 {
+    50_000
+}
+
+fn default_web_fetch_size_limit() -> usize {
+    10 * 1024 * 1024
+}
+
+fn default_web_fetch_timeout() -> u64 {
+    30
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -180,6 +234,13 @@ impl Default for Config {
             extract_thinking: default_extract_thinking(),
             default_endpoint: default_endpoint(),
             endpoints: HashMap::new(),
+            web_fetch_max_uses_hard_limit: default_web_fetch_hard_limit(),
+            web_fetch_blocked_domains: Vec::new(),
+            web_fetch_block_private_networks: true,
+            web_fetch_default_max_uses: default_web_fetch_default_uses(),
+            web_fetch_default_max_content_tokens: default_web_fetch_default_content_tokens(),
+            web_fetch_response_size_limit_bytes: default_web_fetch_size_limit(),
+            web_fetch_request_timeout_secs: default_web_fetch_timeout(),
             config_path: None,
         }
     }
