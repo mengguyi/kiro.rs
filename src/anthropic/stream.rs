@@ -272,6 +272,8 @@ pub struct SseStateManager {
     message_started: bool,
     /// message_delta 是否已发送
     message_delta_sent: bool,
+    /// 累计的 builtin server tool 调用次数（usage_counter_key → count）
+    server_tool_use_counts: std::collections::HashMap<&'static str, u32>,
     /// 活跃的内容块状态
     active_blocks: HashMap<i32, BlockState>,
     /// 消息是否已结束
@@ -295,6 +297,7 @@ impl SseStateManager {
         Self {
             message_started: false,
             message_delta_sent: false,
+            server_tool_use_counts: std::collections::HashMap::new(),
             active_blocks: HashMap::new(),
             message_ended: false,
             next_block_index: 0,
@@ -444,6 +447,11 @@ impl SseStateManager {
         None
     }
 
+    /// 记录一次 builtin server tool 调用（用于 message_delta.usage.server_tool_use）
+    pub fn record_server_tool_use(&mut self, counter_key: &'static str) {
+        *self.server_tool_use_counts.entry(counter_key).or_insert(0) += 1;
+    }
+
     /// 生成最终事件序列
     pub fn generate_final_events(
         &mut self,
@@ -469,6 +477,17 @@ impl SseStateManager {
         // 发送 message_delta
         if !self.message_delta_sent {
             self.message_delta_sent = true;
+            let mut usage = json!({
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens
+            });
+            if !self.server_tool_use_counts.is_empty() {
+                let mut stu = serde_json::Map::new();
+                for (k, v) in &self.server_tool_use_counts {
+                    stu.insert((*k).to_string(), json!(v));
+                }
+                usage["server_tool_use"] = serde_json::Value::Object(stu);
+            }
             events.push(SseEvent::new(
                 "message_delta",
                 json!({
@@ -477,10 +496,7 @@ impl SseStateManager {
                         "stop_reason": self.get_stop_reason(),
                         "stop_sequence": null
                     },
-                    "usage": {
-                        "input_tokens": input_tokens,
-                        "output_tokens": output_tokens
-                    }
+                    "usage": usage
                 }),
             ));
         }
@@ -611,6 +627,99 @@ impl StreamContext {
     /// 4. 重新发起 AWS Q 请求
     pub fn take_pending_intercept(&mut self) -> Option<PendingIntercept> {
         self.pending_intercept.take()
+    }
+
+    /// 合成 `web_fetch_tool_result` SSE 块（成功）
+    ///
+    /// 对齐 Anthropic web_fetch_20260209（allowed_callers=direct 模式）：
+    /// `content_block_start(web_fetch_tool_result, content=<web_fetch_result>, caller={type:direct})`
+    /// + `content_block_stop`
+    pub fn emit_web_fetch_result_success(
+        &mut self,
+        srv_tool_use_id: &str,
+        result: &crate::builtin_tools::web_fetch::FetchOk,
+    ) -> Vec<SseEvent> {
+        let block_index = self.state_manager.next_block_index();
+        self.state_manager
+            .record_server_tool_use(crate::builtin_tools::BuiltinKind::WebFetch.usage_counter_key());
+
+        let mut source = json!({
+            "type": "text",
+            "media_type": "text/plain",
+            "data": result.markdown,
+        });
+        if result.truncated {
+            source["truncated"] = json!(true);
+        }
+
+        let mut document = json!({
+            "type": "document",
+            "source": source,
+        });
+        if let Some(title) = &result.title {
+            document["title"] = json!(title);
+        }
+
+        let content = json!({
+            "type": "web_fetch_result",
+            "url": result.url,
+            "retrieved_at": result.retrieved_at,
+            "content": document,
+        });
+
+        let mut events = self.state_manager.handle_content_block_start(
+            block_index,
+            "tool_use", // 复用 tool_use 类语义（state machine 视角）
+            json!({
+                "type": "content_block_start",
+                "index": block_index,
+                "content_block": {
+                    "type": "web_fetch_tool_result",
+                    "tool_use_id": srv_tool_use_id,
+                    "content": content,
+                    "caller": { "type": "direct" }
+                }
+            }),
+        );
+        if let Some(stop) = self.state_manager.handle_content_block_stop(block_index) {
+            events.push(stop);
+        }
+        events
+    }
+
+    /// 合成 `web_fetch_tool_result` SSE 块（失败）
+    pub fn emit_web_fetch_result_error(
+        &mut self,
+        srv_tool_use_id: &str,
+        error: &crate::builtin_tools::web_fetch::FetchError,
+    ) -> Vec<SseEvent> {
+        let block_index = self.state_manager.next_block_index();
+        self.state_manager
+            .record_server_tool_use(crate::builtin_tools::BuiltinKind::WebFetch.usage_counter_key());
+
+        let content = json!({
+            "type": "web_fetch_tool_result_error",
+            "error_code": error.anthropic_error_code(),
+        });
+
+        let mut events = self.state_manager.handle_content_block_start(
+            block_index,
+            "tool_use",
+            json!({
+                "type": "content_block_start",
+                "index": block_index,
+                "content_block": {
+                    "type": "web_fetch_tool_result",
+                    "tool_use_id": srv_tool_use_id,
+                    "content": content,
+                    "caller": { "type": "direct" }
+                }
+            }),
+        );
+        if let Some(stop) = self.state_manager.handle_content_block_stop(block_index) {
+            events.push(stop);
+        }
+        events
     }
 
     /// 生成 message_start 事件
@@ -1486,6 +1595,83 @@ mod tests {
         });
         assert!(has_tool_use);
         assert!(ctx.take_pending_intercept().is_none());
+    }
+
+    #[test]
+    fn emit_web_fetch_result_success_shape() {
+        use crate::builtin_tools::web_fetch::FetchOk;
+
+        let mut ctx =
+            StreamContext::new_with_thinking("claude-opus-4-7", 100, false, HashMap::new());
+        let _ = ctx.generate_initial_events();
+
+        let ok = FetchOk {
+            url: "https://example.com".to_string(),
+            title: Some("Example".to_string()),
+            retrieved_at: "2026-05-22T16:06:52.442000+00:00".to_string(),
+            markdown: "# Hello".to_string(),
+            truncated: false,
+        };
+        let evs = ctx.emit_web_fetch_result_success("srvtoolu_abc", &ok);
+
+        // 应该有 content_block_start(web_fetch_tool_result) + stop
+        let start = evs
+            .iter()
+            .find(|e| e.event == "content_block_start")
+            .expect("has start");
+        let cb = start.data.get("content_block").unwrap();
+        assert_eq!(cb["type"], "web_fetch_tool_result");
+        assert_eq!(cb["tool_use_id"], "srvtoolu_abc");
+        assert_eq!(cb["caller"]["type"], "direct");
+        let content = &cb["content"];
+        assert_eq!(content["type"], "web_fetch_result");
+        assert_eq!(content["url"], "https://example.com");
+        assert_eq!(content["content"]["type"], "document");
+        assert_eq!(content["content"]["source"]["data"], "# Hello");
+        assert_eq!(content["content"]["title"], "Example");
+
+        assert!(evs.iter().any(|e| e.event == "content_block_stop"));
+    }
+
+    #[test]
+    fn emit_web_fetch_result_error_shape() {
+        use crate::builtin_tools::web_fetch::FetchError;
+
+        let mut ctx =
+            StreamContext::new_with_thinking("claude-opus-4-7", 100, false, HashMap::new());
+        let _ = ctx.generate_initial_events();
+
+        let evs = ctx.emit_web_fetch_result_error("srvtoolu_xyz", &FetchError::UrlNotAllowed);
+        let start = evs.iter().find(|e| e.event == "content_block_start").unwrap();
+        let cb = start.data.get("content_block").unwrap();
+        assert_eq!(cb["content"]["type"], "web_fetch_tool_result_error");
+        assert_eq!(cb["content"]["error_code"], "url_not_allowed");
+    }
+
+    #[test]
+    fn message_delta_includes_server_tool_use_count() {
+        use crate::builtin_tools::web_fetch::FetchOk;
+
+        let mut ctx =
+            StreamContext::new_with_thinking("claude-opus-4-7", 100, false, HashMap::new());
+        let _ = ctx.generate_initial_events();
+        let ok = FetchOk {
+            url: "https://x".to_string(),
+            title: None,
+            retrieved_at: "2026-01-01T00:00:00Z".to_string(),
+            markdown: "x".to_string(),
+            truncated: false,
+        };
+        // emit 两次
+        let _ = ctx.emit_web_fetch_result_success("srvtoolu_1", &ok);
+        let _ = ctx.emit_web_fetch_result_success("srvtoolu_2", &ok);
+
+        let finals = ctx.state_manager.generate_final_events(100, 50);
+        let delta = finals
+            .iter()
+            .find(|e| e.event == "message_delta")
+            .expect("has message_delta");
+        assert_eq!(delta.data["usage"]["server_tool_use"]["web_fetch_requests"], 2);
     }
 
     #[test]
