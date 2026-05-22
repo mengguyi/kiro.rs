@@ -201,6 +201,27 @@ pub fn create_mcp_request(query: &str) -> (String, McpRequest) {
     (tool_use_id, request)
 }
 
+/// 生成 `encrypted_content` 字段占位串。
+///
+/// Anthropic 真实 `encrypted_content` 是 base64 编码的不透明 token（≈ 5 KB），
+/// 客户端在多轮对话回传给上游用于"展开此搜索结果完整内容"。
+/// kiro.rs 上游 (AWS Q MCP) 不返回此 token，我们用一个明显的非 base64 串：
+/// `kiro-rs-synth:<snippet 文本截断>` —— 客户端尝试回传时上游会 reject，
+/// 但日志/审计能立刻识别是合成 vs 真实 token，定位问题不至于走偏。
+fn synth_encrypted_content_sentinel(snippet: Option<&str>) -> String {
+    let trimmed = snippet.unwrap_or("").trim();
+    if trimmed.is_empty() {
+        "kiro-rs-synth:no-snippet".to_string()
+    } else {
+        // 截断到 200 char 避免 SSE 块过大
+        let safe = match trimmed.char_indices().nth(200) {
+            Some((idx, _)) => &trimmed[..idx],
+            None => trimmed,
+        };
+        format!("kiro-rs-synth:{safe}")
+    }
+}
+
 /// 解析 MCP 响应中的搜索结果
 pub fn parse_search_results(mcp_response: &McpResponse) -> Option<WebSearchResults> {
     let result = mcp_response.result.as_ref()?;
@@ -339,7 +360,11 @@ fn generate_websearch_events(
                     "type": "web_search_result",
                     "title": r.title,
                     "url": r.url,
-                    "encrypted_content": r.snippet.clone().unwrap_or_default(),
+                    // encrypted_content sentinel：Anthropic 真实值是 base64 不透明 token
+                    // 用于多轮对话回传给上游"展开搜索结果详情"。
+                    // kiro.rs 上游 (AWS Q MCP) 不返回此 token，我们用一个明显的
+                    // 非 base64 占位串让客户端/模型识别这不是真 token，避免回传上游被拒。
+                    "encrypted_content": synth_encrypted_content_sentinel(r.snippet.as_deref()),
                     "page_age": page_age
                 })
             })
@@ -732,6 +757,30 @@ mod tests {
         let results = results.unwrap();
         assert_eq!(results.results.len(), 1);
         assert_eq!(results.results[0].title, "Test");
+    }
+
+    #[test]
+    fn synth_encrypted_content_has_kiro_rs_prefix() {
+        let with_snippet = synth_encrypted_content_sentinel(Some("Hello world"));
+        assert!(with_snippet.starts_with("kiro-rs-synth:"));
+        // 不是合法 base64（含 `:`），上游回传必然 reject
+        assert!(with_snippet.contains(':'));
+
+        let no_snippet = synth_encrypted_content_sentinel(None);
+        assert_eq!(no_snippet, "kiro-rs-synth:no-snippet");
+
+        let empty = synth_encrypted_content_sentinel(Some(""));
+        assert_eq!(empty, "kiro-rs-synth:no-snippet");
+    }
+
+    #[test]
+    fn synth_encrypted_content_truncates_utf8_safely() {
+        let long: String = "你".repeat(500);
+        let out = synth_encrypted_content_sentinel(Some(&long));
+        // 不能在 char 中间截断
+        assert!(std::str::from_utf8(out.as_bytes()).is_ok());
+        // 整体长度合理（200 个中文 ≈ 600 字节 + prefix）
+        assert!(out.len() < 700);
     }
 
     #[test]
