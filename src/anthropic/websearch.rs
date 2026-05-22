@@ -566,6 +566,7 @@ mod tests {
                 description: String::new(),
                 input_schema: Default::default(),
                 max_uses: Some(8),
+                ..Default::default()
             }]),
             tool_choice: None,
             thinking: None,
@@ -596,6 +597,7 @@ mod tests {
                     description: String::new(),
                     input_schema: Default::default(),
                     max_uses: Some(8),
+                    ..Default::default()
                 },
                 Tool {
                     tool_type: None,
@@ -603,6 +605,7 @@ mod tests {
                     description: "Other tool".to_string(),
                     input_schema: Default::default(),
                     max_uses: None,
+                    ..Default::default()
                 },
             ]),
             tool_choice: None,

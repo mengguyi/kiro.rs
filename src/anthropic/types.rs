@@ -203,26 +203,39 @@ pub struct SystemMessage {
 
 /// 工具定义
 ///
-/// 支持两种格式：
-/// 1. 普通工具：{ name, description, input_schema }
-/// 2. WebSearch 工具：{ type: "web_search_20250305", name: "web_search", max_uses: 8 }
-#[derive(Debug, Clone, Deserialize, Serialize)]
+/// 支持三种格式：
+/// 1. 普通客户端工具：`{ name, description, input_schema }`
+/// 2. WebSearch 工具：`{ type: "web_search_20250305", name: "web_search", max_uses: 8 }`
+/// 3. WebFetch 工具：`{ type: "web_fetch_2026xxxx", name: "web_fetch", max_uses, allowed_domains?, blocked_domains?, max_content_tokens?, citations? }`
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Tool {
-    /// 工具类型，如 "web_search_20250305"（可选，仅 WebSearch 工具）
+    /// 工具类型，如 `"web_search_20250305"` / `"web_fetch_20260209"`（可选，仅 server tool 有）
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub tool_type: Option<String>,
     /// 工具名称
     #[serde(default)]
     pub name: String,
-    /// 工具描述（普通工具必需，WebSearch 工具可选）
+    /// 工具描述（普通工具必需，server tool 可选）
     #[serde(default)]
     pub description: String,
-    /// 输入参数 schema（普通工具必需，WebSearch 工具无此字段）
+    /// 输入参数 schema（普通工具必需，server tool 无此字段）
     #[serde(default)]
     pub input_schema: HashMap<String, serde_json::Value>,
-    /// 最大使用次数（仅 WebSearch 工具）
+    /// 最大使用次数（仅 server tool）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_uses: Option<i32>,
+    /// 允许的 host 列表（仅 web_fetch / web_search 等 server tool；空或缺省表示不限）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allowed_domains: Option<Vec<String>>,
+    /// 禁止的 host 列表（仅 server tool）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocked_domains: Option<Vec<String>>,
+    /// 内容 token 上限（仅 web_fetch）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_content_tokens: Option<u32>,
+    /// 引用追踪配置（仅 web_fetch / web_search；当前未实现具体行为）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub citations: Option<serde_json::Value>,
 }
 
 /// 内容块

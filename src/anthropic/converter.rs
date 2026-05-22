@@ -161,6 +161,11 @@ pub struct ConversionResult {
     pub conversation_state: ConversationState,
     /// 工具名称映射（短名称 → 原始名称），仅当存在超长工具名时非空
     pub tool_name_map: HashMap<String, String>,
+    /// builtin 工具注册表：key = 注入给 AWS Q 的 internal function tool 名
+    /// （形如 `web_fetch_internal_<uuid>`），value = 客户端声明的元数据
+    ///
+    /// stream 层看到 AWS Q 返回的 `tool_use(name=key)` 时去这里查 → 触发本地执行。
+    pub builtin_tools: HashMap<String, crate::builtin_tools::BuiltinToolMeta>,
 }
 
 /// 转换错误
@@ -294,9 +299,10 @@ pub fn convert_request(req: &MessagesRequest) -> Result<ConversionResult, Conver
     let last_message = messages.last().unwrap();
     let (text_content, images, tool_results) = process_message_content(&last_message.content)?;
 
-    // 6. 转换工具定义（超长名称自动缩短并记录映射）
+    // 6. 转换工具定义（超长名称自动缩短并记录映射；builtin server tool 转 function tool）
     let mut tool_name_map = HashMap::new();
-    let mut tools = convert_tools(&req.tools, &mut tool_name_map);
+    let mut builtin_tools = HashMap::new();
+    let mut tools = convert_tools(&req.tools, &mut tool_name_map, &mut builtin_tools);
 
     // 7. 构建历史消息（需要先构建，以便收集历史中使用的工具）
     let mut history = build_history(req, messages, &model_id, &mut tool_name_map)?;
@@ -363,6 +369,7 @@ pub fn convert_request(req: &MessagesRequest) -> Result<ConversionResult, Conver
     Ok(ConversionResult {
         conversation_state,
         tool_name_map,
+        builtin_tools,
     })
 }
 
@@ -608,10 +615,17 @@ fn map_tool_name(name: &str, tool_name_map: &mut HashMap<String, String>) -> Str
 }
 
 /// 转换工具定义
+///
+/// 同时识别 Anthropic 协议层 "server-side tool"（如 `web_fetch_2026xxxx`）→ 转换为
+/// 注入 AWS Q 的 client function tool，并把元数据登记到 `builtin_registry`。
+/// stream 层据此拦截 tool_use 并执行 kiro.rs 本地 builtin 实现。
 fn convert_tools(
     tools: &Option<Vec<super::types::Tool>>,
     tool_name_map: &mut HashMap<String, String>,
+    builtin_registry: &mut HashMap<String, crate::builtin_tools::BuiltinToolMeta>,
 ) -> Vec<Tool> {
+    use crate::builtin_tools::BuiltinKind;
+
     let Some(tools) = tools else {
         return Vec::new();
     };
@@ -619,6 +633,14 @@ fn convert_tools(
     tools
         .iter()
         .map(|t| {
+            // 优先识别 Anthropic 原生 server tool（如 web_fetch_2026xxxx）
+            if let Some(tool_type) = &t.tool_type
+                && let Some(kind) = BuiltinKind::from_tool_type(tool_type)
+            {
+                return convert_builtin_to_function_tool(kind, t, tool_type, builtin_registry);
+            }
+
+            // 普通客户端 function tool
             let mut description = t.description.clone();
 
             // 对 Write/Edit 工具追加自定义描述后缀
@@ -649,6 +671,71 @@ fn convert_tools(
             }
         })
         .collect()
+}
+
+/// 把 Anthropic server tool 声明转成 AWS Q 能消费的 client function tool；
+/// 同时登记 [`BuiltinToolMeta`] 让 stream 层后续可以拦截 + 本地执行。
+fn convert_builtin_to_function_tool(
+    kind: crate::builtin_tools::BuiltinKind,
+    raw: &super::types::Tool,
+    anthropic_type: &str,
+    builtin_registry: &mut HashMap<String, crate::builtin_tools::BuiltinToolMeta>,
+) -> Tool {
+    use crate::builtin_tools::{BuiltinKind, BuiltinToolMeta};
+
+    // 用 UUID 后缀避免和客户端自带的同名 function tool 冲突
+    let short_uuid: String = uuid::Uuid::new_v4().to_string().replace('-', "")[..12].to_string();
+    let internal_name = format!("{}_internal_{}", kind.anthropic_tool_name(), short_uuid);
+
+    // 提取客户端 tool 声明里的 server tool 元数据
+    let meta = BuiltinToolMeta {
+        kind,
+        anthropic_type: anthropic_type.to_string(),
+        max_uses: raw.max_uses.and_then(|n| u32::try_from(n).ok()),
+        allowed_domains: raw.allowed_domains.clone(),
+        blocked_domains: raw.blocked_domains.clone(),
+        max_content_tokens: raw.max_content_tokens,
+        citations_enabled: raw
+            .citations
+            .as_ref()
+            .and_then(|v| v.get("enabled"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+    };
+    builtin_registry.insert(internal_name.clone(), meta);
+
+    let (description, input_schema) = match kind {
+        BuiltinKind::WebFetch => (
+            "Fetch the content of a webpage by URL. Returns the page content converted to markdown. \
+             Use this when you need to read or analyze the content of a specific URL the user mentioned. \
+             The URL must use http or https scheme.",
+            serde_json::json!({
+                "type": "object",
+                "required": ["url"],
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "The full URL to fetch (http or https only)"
+                    }
+                }
+            }),
+        ),
+    };
+
+    tracing::info!(
+        "builtin {} 已注册：客户端 type={} → 内部 function tool={}",
+        kind.anthropic_tool_name(),
+        anthropic_type,
+        internal_name
+    );
+
+    Tool {
+        tool_specification: ToolSpecification {
+            name: internal_name,
+            description: description.to_string(),
+            input_schema: InputSchema::from_json(normalize_json_schema(input_schema)),
+        },
+    }
 }
 
 /// 生成thinking标签前缀
@@ -990,6 +1077,88 @@ mod tests {
     }
 
     #[test]
+    fn convert_tools_registers_builtin_web_fetch() {
+        use crate::anthropic::types::Tool as AnthropicTool;
+        use std::collections::HashMap;
+
+        let mut tool_name_map = HashMap::new();
+        let mut builtins = HashMap::new();
+
+        let tools = Some(vec![
+            AnthropicTool {
+                tool_type: Some("web_fetch_20260209".to_string()),
+                name: "web_fetch".to_string(),
+                max_uses: Some(3),
+                allowed_domains: Some(vec!["example.com".to_string()]),
+                ..Default::default()
+            },
+            AnthropicTool {
+                name: "Bash".to_string(),
+                description: "Run shell command".to_string(),
+                ..Default::default()
+            },
+        ]);
+
+        let out = convert_tools(&tools, &mut tool_name_map, &mut builtins);
+
+        // 两个都应产生 function tool 给 AWS Q
+        assert_eq!(out.len(), 2);
+
+        // web_fetch 应被改名为 web_fetch_internal_<uuid>
+        let fetch_name = &out[0].tool_specification.name;
+        assert!(fetch_name.starts_with("web_fetch_internal_"));
+
+        // builtin registry 里应有该 internal name 对应的 meta
+        let meta = builtins.get(fetch_name).expect("meta registered");
+        assert_eq!(meta.kind, crate::builtin_tools::BuiltinKind::WebFetch);
+        assert_eq!(meta.max_uses, Some(3));
+        assert_eq!(meta.allowed_domains, Some(vec!["example.com".into()]));
+
+        // 普通工具不在 builtin registry
+        assert!(!builtins.contains_key("Bash"));
+    }
+
+    #[test]
+    fn convert_tools_recognizes_old_web_fetch_version() {
+        use crate::anthropic::types::Tool as AnthropicTool;
+        use std::collections::HashMap;
+
+        let mut tool_name_map = HashMap::new();
+        let mut builtins = HashMap::new();
+
+        let tools = Some(vec![AnthropicTool {
+            tool_type: Some("web_fetch_20250910".to_string()),
+            name: "web_fetch".to_string(),
+            ..Default::default()
+        }]);
+
+        convert_tools(&tools, &mut tool_name_map, &mut builtins);
+        assert_eq!(builtins.len(), 1);
+    }
+
+    #[test]
+    fn convert_tools_passes_through_unknown_tool_type() {
+        use crate::anthropic::types::Tool as AnthropicTool;
+        use std::collections::HashMap;
+
+        let mut tool_name_map = HashMap::new();
+        let mut builtins = HashMap::new();
+
+        // 未知 server tool type 应像普通工具一样透传（不进 builtin registry）
+        let tools = Some(vec![AnthropicTool {
+            tool_type: Some("computer_20250825".to_string()),
+            name: "computer".to_string(),
+            description: "Use computer".to_string(),
+            ..Default::default()
+        }]);
+
+        let out = convert_tools(&tools, &mut tool_name_map, &mut builtins);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].tool_specification.name, "computer");
+        assert!(builtins.is_empty());
+    }
+
+    #[test]
     fn test_map_model_thinking_suffix_sonnet() {
         // thinking 后缀不应影响 sonnet 模型映射
         let result = map_model("claude-sonnet-4-5-20250929-thinking");
@@ -1145,6 +1314,7 @@ mod tests {
                 input_schema: schema,
                 tool_type: None,
                 max_uses: None,
+                ..Default::default()
             }]),
             thinking: None,
             tool_choice: None,
@@ -1213,6 +1383,7 @@ mod tests {
                 input_schema: schema,
                 tool_type: None,
                 max_uses: None,
+                ..Default::default()
             }]),
             thinking: None,
             tool_choice: None,
