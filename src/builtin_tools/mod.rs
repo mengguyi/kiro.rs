@@ -111,9 +111,7 @@ impl Default for BuiltinPolicy {
 impl BuiltinPolicy {
     /// 合并客户端 meta 和管理员 policy，得到实际生效的限制
     pub fn effective_max_uses(&self, client: &BuiltinToolMeta) -> u32 {
-        let requested = client
-            .max_uses
-            .unwrap_or(self.web_fetch_default_max_uses);
+        let requested = client.max_uses.unwrap_or(self.web_fetch_default_max_uses);
         requested.min(self.web_fetch_max_uses_hard_limit)
     }
 

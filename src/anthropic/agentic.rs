@@ -177,7 +177,8 @@ async fn run_agentic(tx: mpsc::Sender<Result<Bytes, Infallible>>, args: AgenticA
         if iter >= effective_limit {
             tracing::warn!(
                 "agentic iter #{} 达到生效上限 {}，强制以 url_not_accessible 终止",
-                iter, effective_limit
+                iter,
+                effective_limit
             );
             let evs = ctx.emit_web_fetch_result_error(
                 &p.srv_tool_use_id,
@@ -188,8 +189,7 @@ async fn run_agentic(tx: mpsc::Sender<Result<Bytes, Infallible>>, args: AgenticA
         }
 
         // 解析 input JSON
-        let input_val: serde_json::Value =
-            serde_json::from_str(&p.input_json).unwrap_or(json!({}));
+        let input_val: serde_json::Value = serde_json::from_str(&p.input_json).unwrap_or(json!({}));
         let url = input_val
             .get("url")
             .and_then(|v| v.as_str())
@@ -381,4 +381,3 @@ async fn send_provider_error(tx: &mpsc::Sender<Result<Bytes, Infallible>>, e: an
     );
     let _ = tx.send(Ok(Bytes::from(err_event))).await;
 }
-

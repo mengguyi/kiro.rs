@@ -55,10 +55,9 @@ impl FetchError {
     /// 映射到 Anthropic 协议的 error_code 字符串
     pub fn anthropic_error_code(&self) -> &'static str {
         match self {
-            Self::UrlNotAccessible
-            | Self::InvalidUrl
-            | Self::Timeout
-            | Self::HttpStatus(_) => "url_not_accessible",
+            Self::UrlNotAccessible | Self::InvalidUrl | Self::Timeout | Self::HttpStatus(_) => {
+                "url_not_accessible"
+            }
             Self::UrlNotAllowed => "url_not_allowed",
         }
     }
@@ -104,12 +103,8 @@ pub async fn fetch_url(
     }
 
     // 3. 构造 client（复用全局 ProxyConfig）
-    let client = build_client(
-        proxy,
-        policy.web_fetch_request_timeout_secs,
-        tls_backend,
-    )
-    .map_err(|_| FetchError::UrlNotAccessible)?;
+    let client = build_client(proxy, policy.web_fetch_request_timeout_secs, tls_backend)
+        .map_err(|_| FetchError::UrlNotAccessible)?;
 
     // 4. HTTP GET
     let resp = tokio::time::timeout(
@@ -139,7 +134,10 @@ pub async fn fetch_url(
 
     // 5. 读取 body，带 size 上限
     let limit = policy.web_fetch_response_size_limit_bytes;
-    let bytes = resp.bytes().await.map_err(|_| FetchError::UrlNotAccessible)?;
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|_| FetchError::UrlNotAccessible)?;
     let (body, truncated) = if bytes.len() > limit {
         (bytes.slice(..limit), true)
     } else {
@@ -406,14 +404,18 @@ mod tests {
     #[test]
     fn ssrf_blocks_link_local_and_ec2_metadata() {
         assert!(is_blocked_ip(&IpAddr::V4(Ipv4Addr::new(169, 254, 1, 1))));
-        assert!(is_blocked_ip(&IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254))));
+        assert!(is_blocked_ip(&IpAddr::V4(Ipv4Addr::new(
+            169, 254, 169, 254
+        ))));
     }
 
     #[test]
     fn ssrf_blocks_cgnat() {
         // 100.64.0.0/10
         assert!(is_blocked_ip(&IpAddr::V4(Ipv4Addr::new(100, 64, 0, 1))));
-        assert!(is_blocked_ip(&IpAddr::V4(Ipv4Addr::new(100, 127, 255, 254))));
+        assert!(is_blocked_ip(&IpAddr::V4(Ipv4Addr::new(
+            100, 127, 255, 254
+        ))));
         // 100.128.0.0 不在 /10 范围
         assert!(!is_blocked_ip(&IpAddr::V4(Ipv4Addr::new(100, 128, 0, 1))));
     }
@@ -484,7 +486,10 @@ mod tests {
             FetchError::UrlNotAllowed.anthropic_error_code(),
             "url_not_allowed"
         );
-        assert_eq!(FetchError::Timeout.anthropic_error_code(), "url_not_accessible");
+        assert_eq!(
+            FetchError::Timeout.anthropic_error_code(),
+            "url_not_accessible"
+        );
         assert_eq!(
             FetchError::HttpStatus(404).anthropic_error_code(),
             "url_not_accessible"

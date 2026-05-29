@@ -646,8 +646,9 @@ impl StreamContext {
         result: &crate::builtin_tools::web_fetch::FetchOk,
     ) -> Vec<SseEvent> {
         let block_index = self.state_manager.next_block_index();
-        self.state_manager
-            .record_server_tool_use(crate::builtin_tools::BuiltinKind::WebFetch.usage_counter_key());
+        self.state_manager.record_server_tool_use(
+            crate::builtin_tools::BuiltinKind::WebFetch.usage_counter_key(),
+        );
 
         let mut source = json!({
             "type": "text",
@@ -708,8 +709,9 @@ impl StreamContext {
         error: &crate::builtin_tools::web_fetch::FetchError,
     ) -> Vec<SseEvent> {
         let block_index = self.state_manager.next_block_index();
-        self.state_manager
-            .record_server_tool_use(crate::builtin_tools::BuiltinKind::WebFetch.usage_counter_key());
+        self.state_manager.record_server_tool_use(
+            crate::builtin_tools::BuiltinKind::WebFetch.usage_counter_key(),
+        );
 
         let content = json!({
             "type": "web_fetch_tool_result_error",
@@ -1236,7 +1238,9 @@ impl StreamContext {
         };
 
         // 第一次出现该 tool_use_id：发 content_block_start(server_tool_use)
-        let first_seen = !self.builtin_input_buffers.contains_key(&tool_use.tool_use_id);
+        let first_seen = !self
+            .builtin_input_buffers
+            .contains_key(&tool_use.tool_use_id);
         if first_seen {
             self.builtin_input_buffers
                 .insert(tool_use.tool_use_id.clone(), String::new());
@@ -1459,8 +1463,9 @@ mod tests {
 
     #[test]
     fn builtin_tool_use_emits_server_tool_use_block() {
-        let mut ctx = StreamContext::new_with_thinking("claude-opus-4-7", 100, false, HashMap::new())
-            .with_builtin_registry(registry_with_web_fetch("web_fetch_internal_abc"));
+        let mut ctx =
+            StreamContext::new_with_thinking("claude-opus-4-7", 100, false, HashMap::new())
+                .with_builtin_registry(registry_with_web_fetch("web_fetch_internal_abc"));
         // 跳过 message_start / 初始 text 块的开销，直接处理 tool_use
         let _ = ctx.generate_initial_events();
 
@@ -1481,8 +1486,14 @@ mod tests {
                     .and_then(|v| v.as_str())
                     == Some("server_tool_use")
         });
-        assert!(has_server_tool_use, "应该 emit server_tool_use 块: {out1:?}");
-        assert!(ctx.take_pending_intercept().is_none(), "stop=false 不应触发");
+        assert!(
+            has_server_tool_use,
+            "应该 emit server_tool_use 块: {out1:?}"
+        );
+        assert!(
+            ctx.take_pending_intercept().is_none(),
+            "stop=false 不应触发"
+        );
 
         // 第二段 input partial + stop=true
         let ev2 = ToolUseEvent {
@@ -1583,10 +1594,16 @@ mod tests {
             truncated: false,
         };
         let evs = ctx.emit_web_fetch_result_success("srvtoolu_t", &ok);
-        let start = evs.iter().find(|e| e.event == "content_block_start").unwrap();
+        let start = evs
+            .iter()
+            .find(|e| e.event == "content_block_start")
+            .unwrap();
         let title = &start.data["content_block"]["content"]["content"]["title"];
 
-        assert!(title.is_string(), "title 必须是 string，不能 missing/null: {title:?}");
+        assert!(
+            title.is_string(),
+            "title 必须是 string，不能 missing/null: {title:?}"
+        );
         assert_eq!(title.as_str().unwrap(), "x.com");
     }
 
@@ -1623,7 +1640,10 @@ mod tests {
         let _ = ctx.generate_initial_events();
 
         let evs = ctx.emit_web_fetch_result_error("srvtoolu_xyz", &FetchError::UrlNotAllowed);
-        let start = evs.iter().find(|e| e.event == "content_block_start").unwrap();
+        let start = evs
+            .iter()
+            .find(|e| e.event == "content_block_start")
+            .unwrap();
         let cb = start.data.get("content_block").unwrap();
         assert_eq!(cb["content"]["type"], "web_fetch_tool_result_error");
         assert_eq!(cb["content"]["error_code"], "url_not_allowed");
@@ -1652,13 +1672,17 @@ mod tests {
             .iter()
             .find(|e| e.event == "message_delta")
             .expect("has message_delta");
-        assert_eq!(delta.data["usage"]["server_tool_use"]["web_fetch_requests"], 2);
+        assert_eq!(
+            delta.data["usage"]["server_tool_use"]["web_fetch_requests"],
+            2
+        );
     }
 
     #[test]
     fn builtin_srv_id_stable_across_chunks() {
-        let mut ctx = StreamContext::new_with_thinking("claude-opus-4-7", 100, false, HashMap::new())
-            .with_builtin_registry(registry_with_web_fetch("web_fetch_internal_abc"));
+        let mut ctx =
+            StreamContext::new_with_thinking("claude-opus-4-7", 100, false, HashMap::new())
+                .with_builtin_registry(registry_with_web_fetch("web_fetch_internal_abc"));
         let _ = ctx.generate_initial_events();
 
         let ev1 = ToolUseEvent {

@@ -1917,10 +1917,7 @@ impl MultiTokenManager {
     /// 用于 agentic web_fetch 走和当前 Kiro API 调用同样的出口 IP，
     /// 保持 "一号一 IP" 语义。返回 `None` 表示直连（即使全局配置了代理，
     /// 该号也可能用 `"direct"` 显式绕过）。
-    pub fn get_effective_proxy_for(
-        &self,
-        id: u64,
-    ) -> Option<crate::http_client::ProxyConfig> {
+    pub fn get_effective_proxy_for(&self, id: u64) -> Option<crate::http_client::ProxyConfig> {
         let entries = self.entries.lock();
         let cred = entries.iter().find(|e| e.id == id)?;
         cred.credentials.effective_proxy(self.proxy.as_ref())
